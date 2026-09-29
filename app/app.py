@@ -17,7 +17,23 @@ from core.difuso import regla_texto, trimf
 
 st.set_page_config(page_title="Portafolio de Concursos OECE", page_icon="📊", layout="wide")
 
-COLORES = ["#2a9d8f", "#e9c46a", "#f4a261", "#e76f51", "#264653"]
+COLORES = ["#2a9d8f", "#e9c46a", "#f4a261", "#e76f51", "#8ab4f8"]
+LINEA = "#9aa0a6"   # visible en tema claro y oscuro
+
+st.markdown("""
+<style>
+.block-container {padding-top: 2.6rem; padding-bottom: 1rem; max-width: 100%;}
+h1 {font-size: 1.55rem !important; padding: 0 !important; margin: 0 !important;}
+h3 {font-size: 1.1rem !important; padding: .2rem 0 !important;}
+h5 {font-size: .95rem !important; padding: .1rem 0 !important; margin: 0 !important;}
+[data-testid="stMetricValue"] {font-size: 1.3rem;}
+[data-testid="stMetricLabel"] p {font-size: .76rem;}
+[data-testid="stMetric"] {padding: .15rem .6rem; border-left: 3px solid #2a9d8f; background: rgba(127,127,127,.07); border-radius: 4px;}
+.stTabs [data-baseweb="tab-list"] {gap: .3rem;}
+.stTabs [data-baseweb="tab"] {padding: .35rem .8rem; height: auto;}
+div[data-testid="stExpander"] details summary p {font-size: .9rem;}
+section[data-testid="stSidebar"] .block-container {padding-top: 1rem;}
+</style>""", unsafe_allow_html=True)
 
 
 # ============================ utilidades ============================
@@ -32,50 +48,101 @@ def cargar_api(paginas):
     return oece.consultar_api(paginas)
 
 
-def grafico_mf(variables, universos, titulo_fn=lambda v: v, cols=3, altura=220, marcas=None):
-    nombres = list(variables)
-    filas = [nombres[i:i + cols] for i in range(0, len(nombres), cols)]
-    for fila in filas:
-        cs = st.columns(cols)
-        for c, v in zip(cs, fila):
-            lo, hi = universos[v]
-            x = np.linspace(lo, hi, 300)
-            fig = go.Figure()
-            for i, (t, p) in enumerate(variables[v].items()):
-                fig.add_trace(go.Scatter(x=x, y=trimf(x, *p), name=t, line=dict(color=COLORES[i % 5], width=2)))
-            if marcas and v in marcas:
-                fig.add_vline(x=marcas[v], line_dash="dash", line_color="black")
-            fig.update_layout(title=titulo_fn(v), height=altura, margin=dict(l=10, r=10, t=35, b=10),
-                              legend=dict(orientation="h", y=-0.25, font=dict(size=10)), yaxis_range=[0, 1.05])
-            c.plotly_chart(fig, width="stretch")
+@st.cache_data(show_spinner="Filtrando y evaluando compatibilidad difusa…")
+def evaluar_concursos(vig, ficha, montos_hist, fecha_ref):
+    fac, embudo = filtro.aplicar(vig, ficha, montos_hist)
+    ev = CO.evaluar(fac, ficha, fecha_ref) if len(fac) else fac
+    return fac, embudo, ev
 
 
-def grafico_salida(sistema, res, titulo):
-    fig = go.Figure()
-    for i, (t, mf) in enumerate(sistema.mf_salida.items()):
-        fig.add_trace(go.Scatter(x=sistema.Y, y=mf, name=t, line=dict(color=COLORES[i % 5], dash="dot")))
-    fig.add_trace(go.Scatter(x=sistema.Y, y=res["agregada"], name="agregada", fill="tozeroy",
-                             line=dict(color="#264653", width=3)))
-    fig.add_vline(x=res["valor"], line_color="red", annotation_text=f"centroide = {res['valor']:.1f}")
-    fig.update_layout(title=titulo, height=300, margin=dict(l=10, r=10, t=40, b=10), yaxis_range=[0, 1.05])
+@st.cache_data(show_spinner="Ejecutando el algoritmo genético…")
+def correr_modelo(cand, ficha, fecha_ref, lambdas, forma, pen, params):
+    ctx = PA.construir_contexto(cand, ficha, fecha_ref)
+    res = PA.algoritmo_genetico(ctx, PA.Evaluador(ctx, lambdas, forma, pen), params)
+    exh = PA.exhaustivo(ctx, PA.Evaluador(ctx, lambdas, forma, pen)) if PA.n_combinaciones(ctx) <= 60_000 else None
+    return ctx, res, exh
+
+
+@st.cache_data(show_spinner="Barrido de λ…")
+def correr_barrido(cand, ficha, fecha_ref, forma, pen, params):
+    """No depende de λ: no se recalcula al mover el slider de λ."""
+    ctx = PA.construir_contexto(cand, ficha, fecha_ref)
+    valores = [0, 0.5, 1, 2, 3, 4, 6] if forma == "resta" else [0, 0.25, 0.5, 1, 1.5, 2, 3]
+    return PA.barrido_lambda(ctx, {"recursos": 1.0, "fechas": 0.3, "ventana": 0.2}, valores, forma, pen, params)
+
+
+def estilo(fig, alto, titulo=None, leyenda=True):
+    fig.update_layout(height=alto, margin=dict(l=0, r=0, t=28 if titulo else 6, b=0),
+                      title=dict(text=titulo or "", font=dict(size=13), x=0, y=.98, yanchor="top"),
+                      font=dict(size=11), showlegend=leyenda,
+                      legend=dict(orientation="h", yanchor="top", y=-0.24, xanchor="left", x=0, font=dict(size=10), title_text=""))
+    fig.update_xaxes(title_standoff=4)
     return fig
 
 
-def tabla_reglas(activas, salida):
-    return pd.DataFrame([{"Regla": regla_texto(a, c, salida), "Activación (mín)": round(w, 3)} for a, c, w in activas])
+def fig_mf(variables, universo, v, marca=None, alto=150):
+    lo, hi = universo
+    x = np.linspace(lo, hi, 250)
+    fig = go.Figure()
+    for i, (t, p) in enumerate(variables.items()):
+        y = trimf(x, *p)
+        fig.add_trace(go.Scatter(x=x, y=y, name=t, line=dict(color=COLORES[i % 5], width=2)))
+        fig.add_annotation(x=x[int(np.argmax(y))], y=1.1, text=t, showarrow=False, font=dict(size=9, color=COLORES[i % 5]))
+    if marca is not None:
+        fig.add_vline(x=marca, line_dash="dash", line_color=LINEA)
+    fig.update_yaxes(range=[0, 1.2], showticklabels=False)
+    return estilo(fig, alto, v, leyenda=False)
 
+
+def grilla_mf(variables, universos, cols, marcas=None):
+    nombres = list(variables)
+    for i in range(0, len(nombres), cols):
+        for c, v in zip(st.columns(cols), nombres[i:i + cols]):
+            c.plotly_chart(fig_mf(variables[v], universos[v], v, (marcas or {}).get(v)), width="stretch")
+
+
+def fig_salida(sistema, res, alto=230, titulo=None):
+    fig = go.Figure()
+    for i, (t, mf) in enumerate(sistema.mf_salida.items()):
+        fig.add_trace(go.Scatter(x=sistema.Y, y=mf, name=t, showlegend=False,
+                                 line=dict(color=COLORES[i % 5], dash="dot", width=1)))
+        fig.add_annotation(x=sistema.Y[int(np.argmax(mf))], y=1.06, text=t, showarrow=False,
+                           font=dict(size=9, color=COLORES[i % 5]))
+    fig.add_trace(go.Scatter(x=sistema.Y, y=res["agregada"], name="agregada", fill="tozeroy",
+                             line=dict(color="#8ab4f8", width=2.5)))
+    fig.add_vline(x=res["valor"], line_color="#e76f51", line_width=2,
+                  annotation_text=f"centroide {res['valor']:.1f}", annotation_position="top left")
+    fig.update_yaxes(range=[0, 1.12])
+    return estilo(fig, alto, titulo, leyenda=False)
+
+
+def tabla_reglas(activas, salida):
+    return pd.DataFrame([{"Regla": regla_texto(a, c, salida), "Activación": round(w, 2)} for a, c, w in activas])
+
+
+COL_BARRA = lambda t: st.column_config.ProgressColumn(t, min_value=0, max_value=100, format="%.0f")  # noqa: E731
+COL_MONTO = st.column_config.NumberColumn("monto S/", format="compact")
 
 # ============================ barra lateral ============================
-st.sidebar.title("⚙️ Configuración")
-fuente_sel = st.sidebar.radio("Fuente de concursos", ["Descarga masiva OECE (corte mensual)", "API en vivo OECE"],
-                              help="Ambas son fuentes oficiales del OECE en formato OCDS.")
-paginas = 25
-if fuente_sel == "API en vivo OECE":
-    paginas = st.sidebar.slider("Páginas a consultar (20 procesos c/u)", 5, 60, 25)
-
+st.sidebar.markdown("### 🏢 Empresa y datos")
 empresa_sel = st.sidebar.selectbox("Empresa simulada", list(perfil.EMPRESAS))
-st.sidebar.caption("En el sistema completo, la ficha la construye el chatbot (IA generativa). "
-                   "Aquí se simula con un formulario.")
+fuente_sel = st.sidebar.radio("Fuente de concursos", ["Descarga masiva OECE", "API en vivo OECE"], horizontal=True,
+                              help="Ambas son fuentes oficiales del OECE en formato OCDS.")
+paginas = st.sidebar.slider("Páginas de la API (20 procesos c/u)", 5, 60, 25) if fuente_sel == "API en vivo OECE" else 25
+
+st.sidebar.markdown("### 🧬 Modelo")
+forma = st.sidebar.radio("Riesgo en el fitness", ["descuento", "resta"], horizontal=True,
+                         format_func={"descuento": "Descuento", "resta": "Resta"}.get,
+                         help="Descuento: Σs·(1−R/100)^λ  ·  Resta: Σs − λ·R")
+lam = st.sidebar.slider("λ riesgo (aversión al riesgo)", 0.0, 6.0 if forma == "resta" else 3.0, 1.0, 0.25)
+pen = st.sidebar.checkbox("Penalidades clásicas (recursos, fechas, ventana)", False,
+                          help="Castigan parte de lo mismo que el riesgo difuso (doble penalización).")
+with st.sidebar.expander("Parámetros avanzados"):
+    umbral = st.slider("Umbral de compatibilidad (preselección)", 0, 90, 60)
+    top_n = st.slider("Top-N candidatos (genes)", 5, 25, 15)
+    pob = st.slider("Población", 20, 200, 80, 10)
+    gens = st.slider("Generaciones máx.", 20, 400, 150, 10)
+    pmut = st.slider("Prob. de mutación por gen", 0.01, 0.30, round(1 / top_n, 2), 0.01)
 
 try:
     df_bulk, fuente_bulk, montos_hist = cargar_bulk()
@@ -86,83 +153,86 @@ except FileNotFoundError as e:
 if fuente_sel == "API en vivo OECE":
     try:
         df_src = cargar_api(paginas)
-        fecha_ref = pd.Timestamp.today().normalize()
-        vig, fecha_ref, corte, retro = oece.concursos_vigentes(df_src, fecha_ref=fecha_ref, min_vigentes=0, max_retro=0)
-        fuente_txt = f"API en vivo ({len(df_src)} procesos recientes)"
-    except Exception as e:
+        vig, fecha_ref, corte, retro = oece.concursos_vigentes(df_src, fecha_ref=pd.Timestamp.today().normalize(),
+                                                               min_vigentes=0, max_retro=0)
+        fuente_txt = "API en vivo"
+    except Exception as e:  # sin conexión: se vuelve a la descarga masiva
         st.sidebar.error(f"API no disponible ({e}). Se usa la descarga masiva.")
-        fuente_sel = "Descarga masiva OECE (corte mensual)"
+        fuente_sel = "Descarga masiva OECE"
 if fuente_sel != "API en vivo OECE":
     df_src = df_bulk
     vig, fecha_ref, corte, retro = oece.concursos_vigentes(df_src)
     fuente_txt = fuente_bulk
-st.sidebar.success(f"**{fuente_txt}**\n\nFecha de referencia: {fecha_ref.date()}\n\nVigentes: {len(vig):,}")
+st.sidebar.caption(f"📡 {fuente_txt} · referencia {fecha_ref.date()} · {len(df_src):,} procesos")
 
 # ============================ encabezado ============================
-st.title("📊 Sistema Inteligente de Portafolio de Concursos Públicos")
-st.caption("Lógica difusa (compatibilidad) → Lógica difusa (riesgo del portafolio) → Algoritmo genético · "
-           "Datos abiertos oficiales del OECE (OCDS)")
+st.title("📊 Portafolio inteligente de concursos públicos")
+st.caption(f"**{empresa_sel}** · Difuso #1 compatibilidad → Algoritmo genético ⇄ Difuso #2 riesgo del portafolio · datos abiertos del OECE (OCDS)")
+cabecera = st.container()   # se llena al final, cuando ya se ejecutó el modelo
 
-tabs = st.tabs(["0 · Arquitectura", "1 · Empresa", "2 · Concursos OECE", "3 · Compatibilidad difusa",
-                "4 · Riesgo difuso", "5 · Algoritmo genético", "6 · Resultado"])
+tabs = st.tabs(["🗺️ Arquitectura", "🏢 Empresa", "📥 Concursos OECE", "🎯 Compatibilidad",
+                "⚠️ Riesgo del portafolio", "🧬 Algoritmo genético", "✅ Resultado"])
 
 # ============================ 0. Arquitectura ============================
 with tabs[0]:
-    if True:
-        st.graphviz_chart("""
-        digraph {
-          rankdir=LR; node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11];
-          F [label="1. Ficha técnica\\n(simula chatbot)", fillcolor="#e9f5f3"];
-          O [label="2. Adaptador OECE\\nbulk + API en vivo", fillcolor="#e9f5f3"];
-          D [label="Filtro duro\\n(restricciones)", fillcolor="#fff3d6"];
-          C [label="3. Difuso #1\\nCompatibilidad\\n(por concurso)", fillcolor="#fde2d4"];
-          P [label="Preselección\\nTop-N", fillcolor="#fff3d6"];
-          G [label="5. Algoritmo genético\\n(elige el portafolio)", fillcolor="#dbe7f3"];
-          RK [label="4. Difuso #2\\nRiesgo del portafolio\\n(cantidad, capital,\\npersonal, fechas)", fillcolor="#fde2d4"];
-          S [label="6. Portafolio +\\nexplicación", fillcolor="#e9f5f3"];
-          F -> D; O -> D; D -> C -> P -> G -> S;
-          G -> RK [label="cada cromosoma", fontsize=9]; RK -> G [label="riesgo 0-100\\nen el fitness", fontsize=9];
-        }""", width="stretch")
-    if True:
-        st.markdown("""
-**Qué hace el sistema**
+    st.graphviz_chart("""
+    digraph {
+      rankdir=LR; bgcolor="transparent"; nodesep=0.25; ranksep=0.35;
+      node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, margin="0.12,0.06"];
+      edge [color="#888888", fontname="Helvetica", fontsize=8, fontcolor="#888888"];
+      F [label="Ficha técnica\\n(simula chatbot)", fillcolor="#d7efe9"];
+      O [label="Adaptador OECE\\nbulk + API en vivo", fillcolor="#d7efe9"];
+      D [label="Filtro duro", fillcolor="#fff0c7"];
+      C [label="Difuso #1\\nCompatibilidad\\npor concurso", fillcolor="#fbd9c9"];
+      P [label="Top-N\\ncandidatos", fillcolor="#fff0c7"];
+      G [label="Algoritmo genético\\nelige el portafolio", fillcolor="#d3e3f5"];
+      RK [label="Difuso #2  Riesgo\\ncantidad · capital\\npersonal · fechas", fillcolor="#fbd9c9"];
+      S [label="Portafolio +\\nexplicación", fillcolor="#d7efe9"];
+      F -> D; O -> D; D -> C -> P -> G -> S;
+      G -> RK [label="cada cromosoma"]; RK -> G [label="riesgo en el fitness"];
+    }""", width="content")
+    c1, c2, c3 = st.columns(3)
+    with c1, st.container(border=True):
+        st.markdown("""##### Qué hace
+1. **Ficha**: perfil de la empresa (en el sistema completo la extrae el chatbot).
+2. **OECE**: concursos reales convocados.
+3. **Difuso #1**: compatibilidad 0-100 de **cada concurso** (6 variables, 16 reglas).
+4. **AG**: busca la **combinación** de concursos con mejor fitness.
+5. **Difuso #2**: riesgo 0-100 de **cada combinación** que propone el AG.""")
+    with c2, st.container(border=True):
+        st.markdown("""##### Lo pedido: riesgo por cantidad en el fitness
+`Fitness = Σ compatibilidad · (1 − Riesgo/100)^λ`
 
-1. **Ficha técnica**: el perfil de la empresa (en el sistema completo la extrae el chatbot).
-2. **OECE**: concursos reales convocados, desde la descarga masiva o la API en vivo.
-3. **Difuso #1 (compatibilidad)**: puntúa **cada concurso** de 0 a 100 con 6 variables y 16 reglas Mamdani.
-4. **Difuso #2 (riesgo)**: puntúa **cada combinación** de concursos de 0 a 100. El riesgo depende de la
-   combinación: dos concursos seguros por separado pueden ser riesgosos juntos.
-5. **Algoritmo genético**: busca la combinación con mejor **fitness**, que incluye el riesgo difuso.
-6. **Resultado**: portafolio, alternativas y explicación.
-""")
-    st.info("**Lo pedido por el profesor — riesgo por cantidad de licitaciones dentro del fitness:**\n\n"
-            "`Fitness(x) = Σ compatibilidad(x) · (1 − Riesgo_difuso(x)/100)^λ`  (o en forma de resta: `Σ compatibilidad − λ·Riesgo`)\n\n"
-            "El **eje principal** del sistema de riesgo es `cantidad = nº licitaciones / capacidad operativa`. "
-            "El tope duro del AG se amplió a 2× la capacidad, de modo que **es la lógica difusa, no una regla fija, "
-            "la que decide cuántas licitaciones son demasiadas**.")
+El eje principal del riesgo es **cantidad = nº licitaciones / capacidad operativa**, con un término
+**EXCESIVA → riesgo CRÍTICO**. El tope duro del AG es 2× la capacidad: **la lógica difusa, no una regla fija,
+decide cuántas son demasiadas**.""")
+    with c3, st.container(border=True):
+        st.markdown("""##### Por qué dos sistemas difusos
+La compatibilidad es propiedad de **un** concurso; el riesgo es propiedad de **la combinación**.
+Dos concursos seguros por separado pueden ser riesgosos juntos (suman capital y personal, y sus
+cierres chocan). Por eso el riesgo se evalúa dentro del fitness, cromosoma por cromosoma.""")
 
 # ============================ 1. Empresa ============================
 with tabs[1]:
     base = perfil.EMPRESAS[empresa_sel]
-    k = empresa_sel  # las claves de los widgets dependen de la empresa: al cambiarla se recargan
-    st.subheader(f"Ficha técnica — {empresa_sel}")
-    c1, c2, c3 = st.columns(3)
+    k = empresa_sel  # las claves dependen de la empresa: al cambiarla se recargan los valores
+    c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
     with c1:
-        kws = st.text_area("Palabras clave del rubro (una por línea)", "\n".join(base["rubro_keywords"]), height=260, key=k + "kw")
-        cats = st.multiselect("Categorías", list(perfil.CATEGORIAS), base["categorias"],
-                              format_func=perfil.CATEGORIAS.get, key=k + "cat")
+        kws = st.text_area("Palabras clave del rubro (una por línea)", "\n".join(base["rubro_keywords"]), height=218, key=k + "kw")
     with c2:
+        cats = st.multiselect("Categorías", list(perfil.CATEGORIAS), base["categorias"], format_func=perfil.CATEGORIAS.get, key=k + "cat")
         cap_fin = st.number_input("Capacidad financiera (S/)", 10_000, 50_000_000, base["capacidad_financiera"], 50_000, key=k + "cf")
         m_min = st.number_input("Monto mínimo de interés (S/)", 0, 5_000_000, base["monto_minimo_interes"], 5_000, key=k + "mm")
-        presup = st.number_input("Presupuesto para postulaciones (S/)", 5_000, 5_000_000, base["presupuesto_postulaciones"], 5_000, key=k + "pp")
-        exp = st.number_input("Años de experiencia", 0, 60, base["experiencia_anios"], key=k + "ex")
     with c3:
+        presup = st.number_input("Presupuesto de postulaciones (S/)", 5_000, 5_000_000, base["presupuesto_postulaciones"], 5_000, key=k + "pp")
+        exp = st.number_input("Años de experiencia", 0, 60, base["experiencia_anios"], key=k + "ex")
         pers = st.number_input("Personal disponible", 1, 500, base["personal_disponible"], key=k + "pe")
+    with c4:
         cap_op = st.number_input("Capacidad operativa (proyectos simultáneos)", 1, 20, base["capacidad_operativa"], key=k + "co",
-                                 help="Es la referencia de la variable 'cantidad' del riesgo difuso.")
+                                 help="Referencia de la variable 'cantidad' del riesgo difuso.")
         dep = st.text_input("Departamento base", base["departamento_base"], key=k + "dep").upper().strip()
         cob = st.radio("Cobertura", ["nacional", "regional"], ["nacional", "regional"].index(base["cobertura"]), horizontal=True, key=k + "cob")
-        deps = st.text_input("Departamentos de cobertura (coma)", ", ".join(base["departamentos_cobertura"]), key=k + "deps")
+    deps = st.text_input("Departamentos de cobertura (separados por coma)", ", ".join(base["departamentos_cobertura"]), key=k + "deps")
 
     ficha = {**base,
              "rubro_keywords": [w.strip() for w in kws.splitlines() if w.strip()],
@@ -171,240 +241,228 @@ with tabs[1]:
              "capacidad_operativa": int(cap_op), "departamento_base": dep, "cobertura": cob,
              "departamentos_cobertura": [d.strip().upper() for d in deps.split(",") if d.strip()]}
     errores = perfil.validar(ficha)
+    for e in errores:
+        st.error(e)
     if errores:
-        for e in errores:
-            st.error(e)
         st.stop()
     with st.expander("Ficha estructurada (lo que el chatbot entregaría al núcleo inteligente)"):
-        st.json(ficha)
+        st.json(ficha, expanded=False)
+
+# ============================ pipeline ============================
+fac, embudo, ev = evaluar_concursos(vig, ficha, montos_hist, fecha_ref)
+if not len(fac):
+    with cabecera:
+        st.warning("Ningún concurso pasa el filtro. Amplíe palabras clave, categorías o capacidad financiera (pestaña Empresa).")
+    st.stop()
+
+cand = ev[ev["score"] >= umbral].head(top_n)
+aviso_umbral = len(cand) < 3
+if aviso_umbral:
+    cand = ev.head(top_n)
+cand = cand.drop(columns=["regla_dominante"]).reset_index(drop=True)
+cand.index = [f"C{i + 1}" for i in range(len(cand))]
+lambdas = {"riesgo": lam, "recursos": 1.0, "fechas": 0.3, "ventana": 0.2}
+params = {"poblacion": pob, "generaciones": gens, "p_mut": pmut}
+ctx, res, exh = correr_modelo(cand, ficha, fecha_ref, lambdas, forma, pen, params)
+bar = correr_barrido(cand, ficha, fecha_ref, forma, pen, params)
+fit = PA.Evaluador(ctx, lambdas, forma, pen)
+xb, fb = res["ranking"][0]
+riesgo_b = R.riesgo(xb, ctx)
 
 # ============================ 2. Concursos ============================
-fac, embudo = filtro.aplicar(vig, ficha, montos_hist)
-ev = CO.evaluar(fac, ficha, fecha_ref) if len(fac) else fac
-
 with tabs[2]:
-    st.subheader("Concursos del OECE y filtro determinístico")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Procesos en la fuente", f"{len(df_src):,}")
-    c2.metric("Vigentes (convocados)", f"{len(vig):,}")
-    c3.metric("Factibles para la empresa", f"{len(fac):,}")
-    c4.metric("Con monto estimado", f"{int(fac['monto_estimado'].sum()) if len(fac) else 0:,}")
-
-    c1, c2 = st.columns([3, 2])
+    c1, c2 = st.columns([2, 3])
     with c1:
-        fig = go.Figure(go.Funnel(y=embudo["Etapa"], x=embudo["Quedan"], textinfo="value",
-                                  marker=dict(color="#2a9d8f")))
-        fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10), title="Embudo del filtro duro")
-        st.plotly_chart(fig, width="stretch")
+        fig = go.Figure(go.Funnel(y=embudo["Etapa"], x=embudo["Quedan"], textinfo="value", marker=dict(color="#2a9d8f")))
+        st.plotly_chart(estilo(fig, 330, "Embudo del filtro duro", leyenda=False), width="stretch")
     with c2:
-        st.markdown("""
-**¿Por qué un filtro duro antes de la lógica difusa?**
-Hay condiciones que **no admiten grados**: si el concurso es de otro rubro, supera la capacidad
-financiera o es contratación directa, no tiene sentido darle un puntaje parcial. El filtro los descarta
-y la lógica difusa trabaja solo sobre lo factible.
-
-**Dos hallazgos en los datos reales del OECE**
-- `tenderPeriod` trae inicio = fin (solo la fecha de convocatoria). La **vigencia** se determina con
-  `items.statusDetails = CONVOCADO` y el **cierre se estima** como fin de consultas + 8 días.
-- Con la Ley 32069, el **valor estimado de bienes y servicios está reservado** mientras el proceso
-  está convocado (~88 % viene en 0). En vez de descartarlos, se **estima el monto** con la mediana
-  de procesos **ya adjudicados** del mismo método y categoría, y se marca como estimado.
-""")
-    if len(fac):
-        st.dataframe(fac[["descripcion", "entidad", "departamento", "categoria", "metodo", "monto_pen",
-                          "monto_estimado", "cierre_est", "afinidad"]].rename(columns={"monto_pen": "monto S/"}),
-                     width="stretch", height=300)
-    else:
-        st.warning("Ningún concurso pasa el filtro. Amplíe palabras clave, categorías o capacidad financiera.")
-        st.stop()
+        st.markdown(f"##### {len(fac)} concursos factibles · {int(fac['monto_estimado'].sum())} con monto estimado")
+        st.dataframe(fac[["descripcion", "entidad", "departamento", "metodo", "monto_pen", "monto_estimado", "cierre_est"]],
+                     column_config={"monto_pen": COL_MONTO, "monto_estimado": st.column_config.CheckboxColumn("estimado"),
+                                    "cierre_est": st.column_config.DateColumn("cierre est."),
+                                    "descripcion": st.column_config.TextColumn("descripción", width="large")},
+                     height=300, hide_index=True, width="stretch")
+    c1, c2 = st.columns(2)
+    with c1.expander("¿Por qué un filtro duro antes de la lógica difusa?"):
+        st.markdown("Hay condiciones que **no admiten grados**: otro rubro, monto sobre la capacidad financiera, "
+                    "contratación directa o fuera de cobertura. No tiene sentido darles un puntaje parcial; el filtro "
+                    "las descarta y la lógica difusa trabaja solo sobre lo factible.")
+    with c2.expander("Dos hallazgos en los datos reales del OECE"):
+        st.markdown("- `tenderPeriod` trae inicio = fin: la **vigencia** se toma de `items.statusDetails = CONVOCADO` "
+                    "y el **cierre se estima** como fin de consultas + 8 días.\n"
+                    "- Con la **Ley 32069** el valor estimado de bienes y servicios está **reservado** mientras está "
+                    "convocado (~88 % en 0). Se **estima** con la mediana de procesos ya adjudicados del mismo método y "
+                    "categoría, y se marca como estimado.")
 
 # ============================ 3. Compatibilidad ============================
 with tabs[3]:
-    st.subheader("Sistema difuso #1 — Compatibilidad empresa-concurso (0-100)")
-    st.markdown("Mamdani: funciones triangulares → reglas SI-ENTONCES (AND = mínimo) → agregación por máximo → "
-                "**centroide**. Se evalúa **cada concurso por separado**.")
-    with st.expander("Variables de entrada y cómo se calculan", expanded=False):
-        st.table(pd.DataFrame({"Variable": list(CO.DESCRIPCION), "Cálculo": list(CO.DESCRIPCION.values())}))
-        grafico_mf(CO.VARIABLES, CO.UNIVERSOS)
-        st.markdown("**Reglas**")
-        st.table(pd.DataFrame({"Regla": [regla_texto(a, c, "compatibilidad") for a, c in CO.REGLAS]}))
-
-    top = ev.head(50).copy()
-    top["regla dominante"] = top["regla_dominante"].map(lambda r: regla_texto(r[0], r[1], "compat.") if r else "")
-    st.markdown(f"**Ranking individual** ({len(ev)} concursos factibles; se muestran 50)")
-    st.dataframe(top[["descripcion", "entidad", "departamento", "monto_pen", "score", "lectura"] + CO.ENTRADAS]
-                 .rename(columns={"monto_pen": "monto S/"}), width="stretch", height=300)
-
-    st.markdown("#### 🔍 Ver el razonamiento difuso de un concurso")
-    idx = st.selectbox("Concurso", top.index, format_func=lambda i: f"{top.loc[i, 'score']:.0f} · {top.loc[i, 'descripcion'][:120]}")
-    entrada = {v: float(ev.loc[idx, v]) for v in CO.ENTRADAS}
-    res = CO.SISTEMA.evaluar(entrada, detalle=True)
-    c1, c2 = st.columns([2, 3])
+    top = ev.head(60)
+    c1, c2 = st.columns([1.15, 1])
     with c1:
-        st.dataframe(pd.DataFrame({"valor": entrada}).T.round(2), width="stretch")
-        grados = pd.DataFrame(res["grados"]).T.round(2).fillna("")
-        st.markdown("Grados de pertenencia")
-        st.dataframe(grados, width="stretch")
+        st.markdown(f"##### Ranking individual · {len(ev)} factibles · **clic en una fila** para ver su razonamiento")
+        sel = st.dataframe(top[["score", "descripcion", "monto_pen", "departamento"]],
+                           column_config={"score": COL_BARRA("compat."), "monto_pen": COL_MONTO,
+                                          "descripcion": st.column_config.TextColumn("descripción", width="medium"),
+                                          "departamento": st.column_config.TextColumn("depto.", width="small")},
+                           height=440, hide_index=True, width="stretch", on_select="rerun",
+                           selection_mode="single-row", key="sel_compat")
+    filas_sel = sel.selection.rows if sel and sel.selection else []
+    idx = top.index[filas_sel[0]] if filas_sel else top.index[0]
+    entrada = {v: float(ev.loc[idx, v]) for v in CO.ENTRADAS}
+    rc = CO.SISTEMA.evaluar(entrada, detalle=True)
     with c2:
-        st.plotly_chart(grafico_salida(CO.SISTEMA, res, "Salida agregada y centroide"), width="stretch")
-    st.dataframe(tabla_reglas(res["activas"], "compatibilidad"), width="stretch")
+        st.markdown(f"##### {ev.loc[idx, 'descripcion'][:90]}…")
+        st.dataframe(pd.DataFrame([entrada]).round(2), hide_index=True, width="stretch")
+        st.plotly_chart(fig_salida(CO.SISTEMA, rc, 215, f"Salida agregada → compatibilidad {rc['valor']:.1f}"), width="stretch")
+        st.dataframe(tabla_reglas(rc["activas"], "compat."), hide_index=True, width="stretch", height=145,
+                     column_config={"Activación": st.column_config.ProgressColumn("Activación", min_value=0, max_value=1, format="%.2f")})
+    with st.expander("Variables de entrada, funciones de pertenencia y reglas (Mamdani: min → max → centroide)"):
+        grilla_mf(CO.VARIABLES, CO.UNIVERSOS, cols=6, marcas=entrada)
+        a, b = st.columns([1, 1.4])
+        a.dataframe(pd.DataFrame({"variable": list(CO.DESCRIPCION), "cálculo": list(CO.DESCRIPCION.values())}),
+                    hide_index=True, width="stretch")
+        b.dataframe(pd.DataFrame({"regla": [regla_texto(a_, c_, "compat.") for a_, c_ in CO.REGLAS]}),
+                    hide_index=True, width="stretch", height=250)
 
 # ============================ 4. Riesgo ============================
 with tabs[4]:
-    st.subheader("Sistema difuso #2 — Riesgo del PORTAFOLIO (0-100)")
-    st.markdown("Se evalúa una **combinación** de concursos. Su salida entra al **fitness** del algoritmo genético. "
-                f"Con la capacidad operativa de esta empresa (**{ficha['capacidad_operativa']}**), "
-                "`cantidad = nº licitaciones / capacidad`.")
-    c1, c2 = st.columns([2, 3])
-    with c1:
+    cap = ficha["capacidad_operativa"]
+    c1, c2, c3 = st.columns([0.9, 1.3, 1.3])
+    with c1, st.container(border=True):
         st.markdown("##### Simulador")
-        kk = st.slider("Nº de licitaciones", 1, 2 * ficha["capacidad_operativa"], ficha["capacidad_operativa"])
-        cap_r = st.slider("Capital comprometido / capacidad financiera", 0.0, 2.0, 0.3, 0.05)
-        per_r = st.slider("Personal requerido / disponible", 0.0, 2.0, 0.4, 0.05)
-        fec_r = st.slider("Choque de cierres de postulación", 0.0, 1.0, 0.1, 0.05)
-        ent_r = {"cantidad": min(2.0, kk / ficha["capacidad_operativa"]), "capital": cap_r, "personal": per_r, "fechas": fec_r}
+        kk = st.slider("Nº de licitaciones", 1, 2 * cap, cap, help=f"Capacidad operativa = {cap}")
+        cap_r = st.slider("Capital / capacidad financiera", 0.0, 2.0, 0.3, 0.05)
+        per_r = st.slider("Personal req. / disponible", 0.0, 2.0, 0.4, 0.05)
+        fec_r = st.slider("Choque de cierres", 0.0, 1.0, 0.1, 0.05)
+        ent_r = {"cantidad": min(2.0, kk / cap), "capital": cap_r, "personal": per_r, "fechas": fec_r}
         rr = R.SISTEMA.evaluar(ent_r, detalle=True)
         st.metric("Riesgo difuso", f"{rr['valor']:.1f} / 100", R.nivel(rr["valor"]).upper(), delta_color="off")
     with c2:
-        st.plotly_chart(grafico_salida(R.SISTEMA, rr, "Salida agregada del riesgo"), width="stretch")
-    st.dataframe(tabla_reglas(rr["activas"], "riesgo"), width="stretch")
-
-    st.markdown("##### 📈 Efecto de la CANTIDAD de licitaciones")
-    st.caption("Cada licitación agrega una fracción de capital y personal; el choque de fechas se mantiene fijo. "
-               "Pasada la capacidad operativa se activa CANTIDAD EXCESIVA → riesgo CRÍTICO.")
-    fig = go.Figure()
-    for nombre, (a, b, c) in {"licitaciones pequeñas": (0.05, 0.07, 0.05), "licitaciones medianas": (0.1, 0.15, 0.2),
-                              "licitaciones grandes": (0.2, 0.25, 0.4)}.items():
-        ks, vals = R.curva_por_cantidad(ficha["capacidad_operativa"], a, b, c)
-        fig.add_trace(go.Scatter(x=ks, y=vals, mode="lines+markers", name=nombre))
-    fig.add_vline(x=ficha["capacidad_operativa"], line_dash="dash", annotation_text="capacidad operativa")
-    fig.update_layout(height=340, xaxis_title="nº de licitaciones en el portafolio", yaxis_title="riesgo difuso",
-                      margin=dict(l=10, r=10, t=20, b=10), yaxis_range=[0, 100])
-    st.plotly_chart(fig, width="stretch")
-
+        st.plotly_chart(fig_salida(R.SISTEMA, rr, 250, "Salida agregada y centroide"), width="stretch")
+        st.dataframe(tabla_reglas(rr["activas"], "riesgo"), hide_index=True, width="stretch",
+                     column_config={"Activación": st.column_config.ProgressColumn("Activación", min_value=0, max_value=1, format="%.2f")})
+    with c3:
+        fig = go.Figure()
+        for nombre, (a, b, c) in {"pequeñas": (0.05, 0.07, 0.05), "medianas": (0.1, 0.15, 0.2),
+                                  "grandes": (0.2, 0.25, 0.4)}.items():
+            ks, vals = R.curva_por_cantidad(cap, a, b, c)
+            fig.add_trace(go.Scatter(x=ks, y=vals, mode="lines+markers", name=f"licitaciones {nombre}"))
+        fig.add_vrect(x0=cap, x1=2 * cap, fillcolor="#e76f51", opacity=0.08, line_width=0,
+                      annotation_text="excede capacidad", annotation_position="top left")
+        fig.add_vline(x=cap, line_dash="dash", line_color=LINEA)
+        fig.update_xaxes(title="nº de licitaciones", dtick=1)
+        fig.update_yaxes(title="riesgo", range=[0, 100])
+        st.plotly_chart(estilo(fig, 330, "📈 Riesgo vs. CANTIDAD de licitaciones"), width="stretch")
+        st.caption("Cada licitación suma capital y personal. Al pasar la capacidad operativa se activa "
+                   "**CANTIDAD EXCESIVA → CRÍTICO**.")
     with st.expander("Funciones de pertenencia y matriz de reglas del riesgo"):
-        grafico_mf(R.VARIABLES, R.UNIVERSOS, cols=4, marcas=ent_r)
-        st.table(pd.DataFrame({"Variable": list(R.DESCRIPCION), "Qué mide": list(R.DESCRIPCION.values())}))
+        grilla_mf(R.VARIABLES, R.UNIVERSOS, cols=4, marcas=ent_r)
+        a, b = st.columns([1, 1.3])
+        a.dataframe(pd.DataFrame({"variable": list(R.DESCRIPCION), "qué mide": list(R.DESCRIPCION.values())}),
+                    hide_index=True, width="stretch")
         m = pd.DataFrame(R.MATRIZ).T
-        m.columns = ["base", "+ capital ajustado", "+ personal justo", "+ fechas medio", "+ fechas alto"]
-        m.loc["excesiva"] = ["critico"] + ["(máximo)"] * 4
-        st.markdown("**Matriz de reglas** — cada nivel de cantidad tiene un riesgo base y los otros factores lo escalan. "
-                    "Globales: capital excedido → crítico · personal excedido → crítico.")
-        st.table(m)
+        m.columns = ["base", "+capital ajust.", "+personal justo", "+fechas medio", "+fechas alto"]
+        m.loc["excesiva"] = ["critico"] + ["—"] * 4
+        b.dataframe(m, width="stretch")
+        b.caption("Cada nivel de cantidad tiene un riesgo base y los otros factores lo escalan. "
+                  "Globales: capital excedido → crítico · personal excedido → crítico.")
 
 # ============================ 5. Algoritmo genético ============================
 with tabs[5]:
-    st.subheader("Algoritmo genético — selección del portafolio con riesgo en el fitness")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        umbral = st.slider("Umbral de compatibilidad para preselección", 0, 90, 60)
-        top_n = st.slider("Top-N candidatos (longitud del cromosoma)", 5, 25, 15)
-    with c2:
-        forma = st.radio("Forma del riesgo en el fitness", ["descuento", "resta"], horizontal=True,
-                         format_func={"descuento": "Descuento: Σs·(1−R/100)^λ", "resta": "Resta: Σs − λ·R"}.get)
-        lam = st.slider("λ riesgo (aversión al riesgo)", 0.0, 6.0 if forma == "resta" else 3.0, 1.0, 0.25)
-        pen = st.checkbox("Agregar penalidades clásicas (recursos, fechas, ventana)", False,
-                          help="Ojo: castigan parte de lo mismo que el riesgo difuso (doble penalización).")
-    with c3:
-        pob = st.slider("Población", 20, 200, 80, 10)
-        gens = st.slider("Generaciones máx.", 20, 400, 150, 10)
-        pmut = st.slider("Prob. de mutación por gen", 0.01, 0.3, round(1 / top_n, 2), 0.01)
-
-    cand = ev[ev["score"] >= umbral].head(top_n)
-    if len(cand) < 3:
+    if aviso_umbral:
         st.warning(f"Menos de 3 concursos superan {umbral}; se toman los {top_n} mejores sin umbral.")
-        cand = ev.head(top_n)
-    cand = cand.reset_index(drop=True)
-    cand.index = [f"C{i + 1}" for i in range(len(cand))]
-    ctx = PA.construir_contexto(cand, ficha, fecha_ref)
-    lambdas = {"riesgo": lam, "recursos": 1.0, "fechas": 0.3, "ventana": 0.2}
-    fit = PA.Evaluador(ctx, lambdas, forma, pen)
-
-    st.markdown(f"**Cromosoma:** {ctx['n']} genes binarios (1 = postular a Cᵢ) · restricción dura "
-                f"1 ≤ Σx ≤ {ctx['k_max']} (2× capacidad) y costo de postulación ≤ S/ {ctx['presupuesto']:,.0f} · "
-                f"espacio de búsqueda: **{PA.n_combinaciones(ctx):,} combinaciones**.")
-    with st.expander("Candidatos (genes)"):
-        st.dataframe(cand[["descripcion", "monto_pen", "monto_estimado", "score", "personal_req", "duracion_est", "cierre_est"]],
-                     width="stretch")
-
-    params = {"poblacion": pob, "generaciones": gens, "p_mut": pmut}
-    res = PA.algoritmo_genetico(ctx, fit, params)
-    st.session_state["resultado"] = (res, cand, ctx, fit)
-    xb = res["ranking"][0][0]
-
+    st.caption(f"**Cromosoma:** {ctx['n']} genes binarios (1 = postular a Cᵢ) · restricción dura 1 ≤ Σx ≤ {ctx['k_max']} "
+               f"(2× capacidad) y costo ≤ S/ {ctx['presupuesto']:,.0f} · espacio: **{PA.n_combinaciones(ctx):,} combinaciones** · "
+               f"torneo 3, cruce uniforme, mutación {pmut:.2f}, elitismo 2, reparación · λ = {lam} ({forma}).")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Licitaciones elegidas", int(xb.sum()))
-    c2.metric("Riesgo difuso", f"{R.riesgo(xb, ctx):.1f}")
-    c3.metric("Fitness", f"{res['ranking'][0][1]:.1f}")
-    c4.metric("Generaciones / evaluaciones", f"{res['generaciones']} / {res['evaluaciones']:,}")
-
-    h = res["hist"]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(y=h["mejor"], name="mejor fitness"))
-    fig.add_trace(go.Scatter(y=h["media"], name="fitness promedio"))
-    fig.add_trace(go.Scatter(y=h["k_mejor"], name="nº licitaciones del mejor", yaxis="y2", line=dict(dash="dot")))
-    fig.update_layout(height=320, title="Convergencia", xaxis_title="generación", margin=dict(l=10, r=10, t=40, b=10),
-                      yaxis2=dict(overlaying="y", side="right", title="nº licitaciones", rangemode="tozero"))
-    st.plotly_chart(fig, width="stretch")
+    c1.metric("Generaciones", res["generaciones"])
+    c2.metric("Portafolios evaluados por el AG", f"{res['evaluaciones']:,}")
+    if exh is not None:
+        xe, fe, n_ev = exh
+        ok = abs(fe - fb) < 1e-6
+        c3.metric("Búsqueda exhaustiva", f"{n_ev:,}", "evaluados", delta_color="off")
+        c4.metric("¿AG = óptimo global?", "✅ Sí" if ok else "≈ Cerca", f"óptimo {fe:.1f}", delta_color="off")
+    else:
+        c3.metric("Búsqueda exhaustiva", "no viable")
+        c4.metric("Justificación", "usar AG")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("##### ✅ Validación contra búsqueda exhaustiva")
-        n_comb = PA.n_combinaciones(ctx)
-        if n_comb <= 60_000:
-            xe, fe, n_ev = PA.exhaustivo(ctx, PA.Evaluador(ctx, lambdas, forma, pen))
-            ok = abs(fe - res["ranking"][0][1]) < 1e-6
-            st.write(f"Exhaustivo: {n_ev:,} portafolios factibles evaluados → fitness óptimo **{fe:.2f}**")
-            st.write(f"AG: **{res['evaluaciones']:,}** evaluaciones → fitness **{res['ranking'][0][1]:.2f}**")
-            (st.success if ok else st.warning)("El AG encontró el óptimo global" if ok else "El AG quedó cerca del óptimo")
-        else:
-            st.info(f"{n_comb:,} combinaciones: la búsqueda exhaustiva ya no es práctica → aquí se justifica el AG.")
-    with c2:
-        st.markdown("##### 🎚️ Barrido de λ: ¿el riesgo reduce la cantidad de licitaciones?")
-        valores = [0, 0.5, 1, 2, 3, 4, 6] if forma == "resta" else [0, 0.25, 0.5, 1, 1.5, 2, 3]
-        bar = PA.barrido_lambda(ctx, lambdas, valores, forma, pen, params)
+        h = res["hist"]
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=bar["λ riesgo"].astype(str), y=bar["nº licitaciones"], name="nº licitaciones", marker_color="#2a9d8f"))
+        fig.add_trace(go.Scatter(y=h["mejor"], name="mejor fitness", line=dict(color="#2a9d8f")))
+        fig.add_trace(go.Scatter(y=h["media"], name="promedio", line=dict(color="#e9c46a")))
+        fig.add_trace(go.Scatter(y=h["k_mejor"], name="nº licitaciones (mejor)", yaxis="y2",
+                                 line=dict(dash="dot", color="#e76f51")))
+        fig.update_layout(yaxis2=dict(overlaying="y", side="right", range=[0, ctx["k_max"] + 0.5], dtick=1,
+                                      showgrid=False, title="nº licitaciones"),
+                          xaxis_title="generación", yaxis_title="fitness")
+        st.plotly_chart(estilo(fig, 340, "Convergencia del AG"), width="stretch")
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=bar["λ riesgo"].astype(str), y=bar["nº licitaciones"], name="nº licitaciones",
+                             marker_color="#2a9d8f", text=bar["nº licitaciones"], textposition="inside"))
         fig.add_trace(go.Scatter(x=bar["λ riesgo"].astype(str), y=bar["riesgo difuso"], name="riesgo", yaxis="y2",
                                  mode="lines+markers", line=dict(color="#e76f51")))
-        fig.update_layout(height=300, xaxis_title="λ", margin=dict(l=10, r=10, t=10, b=10),
-                          yaxis=dict(title="nº licitaciones"), yaxis2=dict(overlaying="y", side="right", title="riesgo", range=[0, 100]))
-        st.plotly_chart(fig, width="stretch")
-    st.dataframe(bar, width="stretch", hide_index=True)
-    st.caption("Con λ = 0 el AG ignora el riesgo y llena el portafolio hasta el tope. Al subir λ el riesgo por cantidad "
-               "pesa más y el AG elige menos licitaciones. **Resta vs. descuento:** en la resta Σs crece sin límite pero "
-               "el riesgo se satura en 100, por eso el cambio es brusco (todo o nada); el descuento se interpreta como "
-               "valor esperado y el ajuste es más gradual.")
+        fig.update_layout(xaxis=dict(title="λ (aversión al riesgo)", type="category"),
+                          yaxis=dict(title="nº licitaciones", dtick=1),
+                          yaxis2=dict(overlaying="y", side="right", range=[0, 100], showgrid=False, title="riesgo"))
+        st.plotly_chart(estilo(fig, 340, "🎚️ Barrido de λ: más aversión al riesgo → menos licitaciones"), width="stretch")
+    c1, c2 = st.columns(2)
+    with c1.expander("Tabla del barrido de λ"):
+        st.dataframe(bar, hide_index=True, width="stretch")
+    with c2.expander("¿Resta o descuento?"):
+        st.markdown("En la **resta** (`Σs − λ·R`), Σs crece sin límite con cada licitación, pero R se satura en 100: "
+                    "el efecto de λ es todo o nada. En el **descuento** (`Σs·(1−R/100)^λ`, valor esperado), una licitación "
+                    "extra solo conviene si su aporte supera lo que el riesgo le quita a **todo** el portafolio, y la "
+                    "cantidad baja de forma gradual. Se pueden comparar las dos formas desde la barra lateral.")
 
 # ============================ 6. Resultado ============================
 with tabs[6]:
-    res, cand, ctx, fit = st.session_state["resultado"]
-    st.subheader("Portafolio recomendado y alternativas")
     filas = []
     for i, (x, fx) in enumerate(res["ranking"][:5], 1):
         d = fit.descomposicion(x)
-        filas.append({"opción": f"Opción {i}", "concursos": " + ".join(cand.index[x == 1]), "nº": int(x.sum()),
+        filas.append({"opción": f"#{i}", "concursos": "+".join(cand.index[x == 1]), "nº": int(x.sum()),
                       **{k2: round(v, 1) for k2, v in d.items()}, "riesgo": round(R.riesgo(x, ctx), 1),
                       "fitness": round(fx, 1)})
     alt = pd.DataFrame(filas)
-    st.dataframe(alt, width="stretch", hide_index=True)
+    c1, c2 = st.columns([1.5, 1])
+    with c1:
+        st.markdown("##### Top 5 portafolios")
+        st.dataframe(alt, hide_index=True, width="stretch",
+                     column_config={"opción": st.column_config.TextColumn("#", width="small"),
+                                    "nº": st.column_config.NumberColumn("nº", width="small"),
+                                    "concursos": st.column_config.TextColumn("concursos", width="small"),
+                                    "Σ compatibilidad": st.column_config.NumberColumn("Σ compat.", format="%.1f"),
+                                    "− pérdida por riesgo": st.column_config.NumberColumn("− riesgo", format="%.1f"),
+                                    "− λ·riesgo": st.column_config.NumberColumn("− λ·R", format="%.1f"),
+                                    "riesgo": COL_BARRA("riesgo"),
+                                    "fitness": st.column_config.NumberColumn("fitness", format="%.1f")})
+        t1, t2 = st.tabs(["📊 Descomposición del fitness", "📅 Calendario del recomendado"])
+        with t1:
+            comp = alt.melt(id_vars="opción", value_vars=[c for c in alt.columns if c[0] in "Σ−"],
+                            var_name="término", value_name="aporte")
+            fig = px.bar(comp, x="opción", y="aporte", color="término", barmode="relative",
+                         color_discrete_sequence=COLORES)
+            fig.update_xaxes(type="category", title=None)
+            st.plotly_chart(estilo(fig, 245), width="stretch")
+        with t2:
+            g = pd.DataFrame([{"concurso": cid, "fase": "preparación", "inicio": fecha_ref, "fin": ctx["cierre"][i]}
+                              for i, cid in enumerate(cand.index) if xb[i]] +
+                             [{"concurso": cid, "fase": "ejecución", "inicio": ctx["ejec_ini"][i], "fin": ctx["ejec_fin"][i]}
+                              for i, cid in enumerate(cand.index) if xb[i]])
+            fig = px.timeline(g, x_start="inicio", x_end="fin", y="concurso", color="fase",
+                              color_discrete_sequence=["#e9c46a", "#2a9d8f"])
+            st.plotly_chart(estilo(fig, 245), width="stretch")
+    with c2, st.container(border=True, height=545):
+        st.markdown(explicacion.texto(xb, cand, ctx, fit, ficha))
 
-    comp = alt.melt(id_vars="opción", value_vars=[c for c in alt.columns if c.startswith("Σ") or c.startswith("−")],
-                    var_name="término", value_name="aporte")
-    fig = px.bar(comp, x="opción", y="aporte", color="término", barmode="relative",
-                 color_discrete_sequence=COLORES, title="Descomposición del fitness (verde suma, resto resta)")
-    fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(fig, width="stretch")
-
-    xb = res["ranking"][0][0]
-    sel = cand[xb == 1]
-    g = pd.DataFrame([{"concurso": cid, "fase": "preparación", "inicio": fecha_ref, "fin": ctx["cierre"][i]}
-                      for i, cid in enumerate(cand.index) if xb[i]] +
-                     [{"concurso": cid, "fase": "ejecución", "inicio": ctx["ejec_ini"][i], "fin": ctx["ejec_fin"][i]}
-                      for i, cid in enumerate(cand.index) if xb[i]])
-    fig = px.timeline(g, x_start="inicio", x_end="fin", y="concurso", color="fase", title="Calendario estimado del portafolio",
-                      color_discrete_sequence=["#e9c46a", "#2a9d8f"])
-    fig.update_layout(height=260, margin=dict(l=10, r=10, t=40, b=10))
-    st.plotly_chart(fig, width="stretch")
-
-    st.markdown(explicacion.texto(xb, cand, ctx, fit, ficha))
+# ============================ cabecera (resumen siempre visible) ============================
+with cabecera:
+    cols = st.columns(6)
+    cols[0].metric("Concursos vigentes", f"{len(vig):,}")
+    cols[1].metric("Factibles para la empresa", f"{len(fac):,}")
+    cols[2].metric("Candidatos al AG (genes)", ctx["n"])
+    cols[3].metric("Licitaciones / capacidad", f"{int(xb.sum())} de {ficha['capacidad_operativa']}")
+    cols[4].metric("Riesgo del portafolio", f"{riesgo_b:.0f} / 100", R.nivel(riesgo_b), delta_color="off")
+    cols[5].metric("Fitness", f"{fb:.1f}", f"λ {lam} · {forma}", delta_color="off")

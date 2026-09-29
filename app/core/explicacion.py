@@ -11,7 +11,7 @@ def texto(x, cand, ctx, fit, ficha):
               f"(capacidad operativa declarada: {ficha['capacidad_operativa']} proyectos simultáneos).", ""]
     for cid, f in sel.iterrows():
         est = " (monto estimado)" if f.get("monto_estimado") else ""
-        lineas.append(f"- **{cid}** · {f['descripcion'][:110]} — {f['entidad'][:45]} · S/ {f['monto_pen']:,.0f}{est} · "
+        lineas.append(f"- **{cid}** · {f['descripcion'][:80]}… — {f['entidad'][:35]} · S/ {f['monto_pen']:,.0f}{est} · "
                       f"compatibilidad {f['score']:.0f}/100")
     lineas += [
         "",

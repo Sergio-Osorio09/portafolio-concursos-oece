@@ -3,6 +3,11 @@
 
 > Cómo abrirlo: `cd app` → `streamlit run app.py` → http://localhost:8501
 > (Si no hay internet: la app usa el caché local `data/oece_2026_procesos.parquet`, o la muestra de respaldo.)
+>
+> **Distribución de la pantalla:** arriba hay una **franja de resumen siempre visible** (vigentes, factibles, candidatos,
+> licitaciones elegidas / capacidad, riesgo, fitness). En la **barra lateral** están la empresa, la fuente de datos y los
+> controles del modelo (**λ**, forma del fitness, penalidades y parámetros avanzados del AG). Al mover λ, la franja
+> de resumen se actualiza sin cambiar de pestaña.
 
 ---
 
@@ -51,7 +56,8 @@ El campo clave para hoy es **capacidad operativa** (proyectos simultáneos): es 
 ---
 
 ## 3 · Compatibilidad difusa (2 min)
-**Qué mostrar:** abrir "Variables de entrada", luego elegir un concurso en "Ver el razonamiento difuso".
+**Qué mostrar:** hacer **clic en una fila** del ranking: a la derecha aparecen sus entradas, la salida agregada con
+el centroide y las reglas activadas. Abajo, el desplegable muestra las funciones de pertenencia y las 16 reglas.
 
 **Qué decir:**
 - 6 entradas: ratio de monto, experiencia, plazo, afinidad técnica, personal y ubicación → 16 reglas Mamdani.
@@ -92,8 +98,8 @@ con 4,9 años de experiencia requerida no debería pasar de 100 a 0 frente a uno
 ---
 
 ## 5 · Algoritmo genético (3 min)
-**Qué mostrar:** métricas, convergencia, validación exhaustiva y el **barrido de λ**. Cambiar la forma a
-"Resta" para comparar.
+**Qué mostrar:** métricas, convergencia, validación exhaustiva y el **barrido de λ**. En la barra lateral,
+cambiar la forma a "Resta" para comparar, y mover λ mirando la franja de resumen.
 
 **Qué decir:**
 - **Gen** = postular o no a Cᵢ (0/1). **Cromosoma** = cadena binaria de N genes = un portafolio.

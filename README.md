@@ -81,8 +81,11 @@ el barrido de λ.
 | **5 · Algoritmo genético** | Parámetros, convergencia, validación contra búsqueda exhaustiva y **barrido de λ** |
 | **6 · Resultado** | Top 5 portafolios, descomposición del fitness, calendario y explicación en texto |
 
-Recorrido sugerido: elegir una empresa → pestaña 4 (mover el nº de licitaciones por encima de la capacidad) →
-pestaña 5 (subir λ y ver cómo baja la cantidad de licitaciones elegidas) → pestaña 6.
+Arriba hay una franja de resumen siempre visible, y en la barra lateral están la empresa, la fuente de datos y los
+controles del modelo (λ, forma del fitness y parámetros del AG).
+
+Recorrido sugerido: elegir una empresa → **Riesgo del portafolio** (mover el nº de licitaciones por encima de la
+capacidad) → **Algoritmo genético** (subir λ en la barra lateral y ver cómo baja la cantidad de licitaciones) → **Resultado**.
 
 ---
 
