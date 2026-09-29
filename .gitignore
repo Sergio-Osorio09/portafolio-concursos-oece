@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+# datos grandes: se regeneran con app/scripts/preparar_datos.py
+app/data/*.jsonl.gz
+app/data/oece_*_procesos.parquet
+# documentos del curso
+*.docx
