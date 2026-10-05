@@ -22,8 +22,8 @@
 - **Lo pedido por el profesor:** el riesgo por **cantidad de licitaciones** ahora está dentro del fitness:
   `Fitness = Σ compatibilidad · (1 − Riesgo/100)^λ`, y el eje principal del riesgo es
   `cantidad = nº licitaciones / capacidad operativa`.
-- El chatbot (IA generativa) queda fuera del alcance de hoy: su única tarea en la arquitectura es producir la
-  ficha técnica, y aquí la simulamos con un formulario. **La IA nunca calcula puntajes** (decisión 17 del documento).
+- El asistente (Gemini) es el primer contacto: entrevista al usuario y produce la ficha técnica; al final recibe el
+  resultado y lo interpreta. También hay un formulario y 3 empresas simuladas. **La IA nunca calcula puntajes** (decisión 17 del documento).
 
 **Por qué dos sistemas difusos y no uno:** la compatibilidad es una propiedad de *un* concurso; el riesgo es
 una propiedad de *la combinación*. Dos concursos que solos son seguros pueden ser riesgosos juntos (suman
@@ -33,7 +33,7 @@ capital, personal y se cruzan en fechas). No se puede calcular el riesgo concurs
 
 ## 1 · Empresa (1 min)
 **Qué mostrar:** elegir en la barra lateral las 3 empresas simuladas (TI, constructora, insumos médicos).
-**Qué decir:** estos campos son exactamente lo que el chatbot entregaría ("ficha estructurada" al final).
+**Qué decir:** estos campos son exactamente lo que el asistente entrega ("ficha estructurada" al final).
 El campo clave para hoy es **capacidad operativa** (proyectos simultáneos): es la referencia de "cantidad".
 
 ---
@@ -137,7 +137,7 @@ dominante y los supuestos declarados.
 - Las reglas y funciones de pertenencia son **expertas, no calibradas**. El documento de arquitectura propone
   calibrarlas con un AG offline (fitness de ranking del ganador sobre datos históricos con `awards`): es la
   siguiente etapa.
-- El chatbot está simulado con un formulario.
+- El asistente solo extrae datos e interpreta; Python valida la ficha y el sistema inteligente calcula todo.
 
 ## Preguntas probables
 - **¿Por qué AG y no fuerza bruta?** El espacio crece como 2ᴺ; con N moderado ya no se puede enumerar. Aquí lo

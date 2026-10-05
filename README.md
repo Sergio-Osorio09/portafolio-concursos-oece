@@ -3,7 +3,7 @@
 **Lógica difusa + Algoritmo genético con riesgo difuso en el fitness**, aplicado a los datos abiertos oficiales
 de contrataciones públicas del Perú (OECE / SEACE, formato OCDS).
 
-Dada la ficha técnica de una empresa (simulada), el sistema:
+Dada la ficha técnica de una empresa (armada por el asistente o simulada), el sistema:
 
 1. obtiene los concursos **convocados** desde el OECE (descarga masiva o **API en vivo**);
 2. descarta los que no son factibles con un **filtro determinístico**;
@@ -16,8 +16,10 @@ Dada la ficha técnica de una empresa (simulada), el sistema:
 Fitness(x) = Σ compatibilidad(x) · (1 − Riesgo_difuso(x) / 100) ^ λ
 ```
 
-> Proyecto del curso **Software Inteligente**. El módulo de IA generativa (chatbot) queda fuera del alcance:
-> la ficha técnica se ingresa con un formulario que simula la salida del chatbot.
+> Proyecto del curso **Software Inteligente**. El primer contacto es un **asistente conversacional (Gemini)**: entrevista
+> al usuario, arma la ficha técnica, la entrega al sistema inteligente y luego **interpreta** el resultado. La IA generativa
+> nunca calcula puntajes ni elige concursos: solo conversa e interpreta. Instalación paso a paso en
+> [MANUAL_INSTALACION.md](MANUAL_INSTALACION.md).
 
 ---
 
@@ -73,8 +75,9 @@ el barrido de λ.
 
 | Pestaña | Qué hace |
 |---|---|
+| **💬 Asistente** | (modo «Asistente») Explicación del resultado en lenguaje sencillo y preguntas de seguimiento |
 | **0 · Arquitectura** | Diagrama del flujo y fórmula del fitness |
-| **1 · Empresa** | Ficha técnica editable. Hay 3 empresas simuladas en la barra lateral (TI, constructora, insumos médicos) |
+| **1 · Empresa** | Ficha técnica editable (en modo «Asistente» viene prellenada con lo que dijo el usuario). Hay 3 empresas simuladas en la barra lateral (TI, constructora, insumos médicos) |
 | **2 · Concursos OECE** | Concursos vigentes y embudo del filtro duro (cuántos descarta cada regla) |
 | **3 · Compatibilidad difusa** | Funciones de pertenencia, reglas y ranking. Al elegir un concurso se ven sus grados, las reglas activadas y el centroide |
 | **4 · Riesgo difuso** | Simulador del riesgo del portafolio y curva **riesgo vs. cantidad de licitaciones** |
@@ -130,7 +133,8 @@ entradas se activa al menos una regla.
 app/
 ├── app.py                    # Interfaz Streamlit
 ├── core/
-│   ├── perfil.py             # Ficha técnica y empresas simuladas (Profile Service)
+│   ├── perfil.py             # Ficha técnica, empresas simuladas y validación de lo que extrae la IA (Profile Service)
+│   ├── asistente.py          # Asistente Gemini: entrevista → ficha, e interpretación del resultado
 │   ├── oece.py               # Adaptador OECE: descarga masiva, API en vivo, vigencia
 │   ├── filtro.py             # Filtro determinístico y estimación de montos reservados
 │   ├── difuso.py             # Motor Mamdani genérico
@@ -140,7 +144,8 @@ app/
 │   └── explicacion.py        # Texto explicativo del resultado
 ├── scripts/
 │   ├── preparar_datos.py     # Descarga y procesa los datos del OECE
-│   └── prueba_flujo.py       # Prueba de punta a punta sin interfaz
+│   ├── prueba_flujo.py       # Prueba de punta a punta sin interfaz
+│   └── prueba_asistente.py   # Prueba del asistente (simulada; con --real llama a Gemini)
 └── data/
     └── muestra_respaldo.parquet
 notebooks/                    # Notebooks originales del modelo

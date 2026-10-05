@@ -8,3 +8,7 @@ app/data/*.jsonl.gz
 app/data/oece_*_procesos.parquet
 # documentos del curso
 *.docx
+# claves de API: nunca al repositorio
+app/.streamlit/secrets.toml
+.streamlit/secrets.toml
+.env

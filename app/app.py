@@ -3,14 +3,16 @@ Lógica difusa (compatibilidad) + Lógica difusa (riesgo del portafolio) + Algor
 
 Ejecutar:  streamlit run app.py
 """
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from core import asistente, explicacion, filtro, oece, perfil
 from core import compatibilidad as CO
-from core import explicacion, filtro, oece, perfil
 from core import portafolio_ag as PA
 from core import riesgo as R
 from core.difuso import regla_texto, trimf
@@ -123,9 +125,126 @@ def tabla_reglas(activas, salida):
 COL_BARRA = lambda t: st.column_config.ProgressColumn(t, min_value=0, max_value=100, format="%.0f")  # noqa: E731
 COL_MONTO = st.column_config.NumberColumn("monto S/", format="compact")
 
+# ============================ asistente (Gemini) ============================
+MODO_ASISTENTE = "💬 Asistente (Gemini)"
+SALUDO = ("¡Hola! Soy el asistente del sistema de portafolios de concursos públicos. Te haré unas preguntas sobre "
+          "tu empresa para evaluar a qué concursos del OECE conviene postular. Para empezar: "
+          "**¿a qué se dedica tu empresa y qué bienes, servicios u obras suele ofrecer?**")
+
+
+def _secreto(nombre):
+    try:
+        return str(st.secrets.get(nombre, "") or "")
+    except Exception:          # no existe .streamlit/secrets.toml
+        return ""
+
+
+def clave_gemini():
+    """Clave de la API: lo escrito en la barra lateral > secrets.toml > variable de entorno. Nunca va en el código."""
+    return (st.session_state.get("gemini_key_input", "").strip() or _secreto("GEMINI_API_KEY")
+            or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""))
+
+
+def _modelo_inicial():
+    return _secreto("GEMINI_MODEL") or os.environ.get("GEMINI_MODEL", "") or asistente.MODELO_DEFECTO
+
+
+def modelo_gemini():
+    return st.session_state.get("gemini_modelo", "").strip() or _modelo_inicial()
+
+
+def iniciar_chat():
+    ss = st.session_state
+    ss.chat_msgs = [{"role": "assistant", "content": SALUDO}]
+    ss.chat_campos = {}
+    ss.ficha_chat = None
+    ss.post_msgs = []
+    ss.interp = None
+    ss.chat_version = ss.get("chat_version", 0) + 1
+
+
+def finalizar_chat():
+    """La ficha se entrega al sistema inteligente: a partir de aquí corre filtro + difusos + AG."""
+    st.session_state.ficha_chat = perfil.ficha_desde_campos(st.session_state.chat_campos)
+    st.session_state.interp = None
+    st.session_state.post_msgs = []
+
+
+def reinterpretar():
+    st.session_state.interp = None
+
+
+def pantalla_recoleccion(api_key, modelo):
+    """Primer contacto: el asistente entrevista al usuario y va llenando la ficha. Termina con st.stop()."""
+    ss = st.session_state
+    st.title("💬 Asistente de postulación a concursos públicos")
+    st.caption("El asistente (Gemini) te entrevista y arma la ficha de tu empresa → el sistema inteligente (difuso + "
+               "algoritmo genético) la evalúa → el asistente te explica el resultado.")
+    if not api_key:
+        st.warning("Falta la **clave de API de Gemini**: pégala en la barra lateral (🤖 Gemini) o configúrala en "
+                   "`.streamlit/secrets.toml` / variable `GEMINI_API_KEY` (ver MANUAL_INSTALACION.md). "
+                   "También puedes elegir una empresa simulada en la barra lateral.")
+    col_chat, col_ficha = st.columns([1.7, 1])
+    error = None
+    with col_chat:
+        caja = st.container()
+        entrada = st.chat_input("Escribe tu respuesta…", disabled=not api_key, key="entrada_recoleccion")
+        if entrada and api_key:
+            hist = ss.chat_msgs + [{"role": "user", "content": entrada}]
+            try:
+                with st.spinner("El asistente está pensando…"):
+                    r = asistente.turno_recoleccion(api_key, hist, ss.chat_campos, modelo)
+            except asistente.GeminiError as e:
+                error = f"{e}  \nTu mensaje no se envió; vuelve a escribirlo: «{entrada}»"
+            else:
+                ss.chat_msgs = hist + [{"role": "assistant", "content": r["mensaje"]}]
+                ss.chat_campos = r["campos"]
+                if r["confirmado"]:          # ficha completa y el usuario aprobó el resumen
+                    finalizar_chat()
+                    st.rerun()
+    with caja:
+        for m in ss.chat_msgs:
+            st.chat_message(m["role"]).markdown(m["content"])
+        if error:
+            st.error(error)
+    with col_ficha, st.container(border=True):
+        campos, faltan = ss.chat_campos, perfil.faltantes(ss.chat_campos)
+        hechos = len(perfil.REQUERIDOS) - len(set(faltan) & set(perfil.REQUERIDOS))
+        st.markdown("##### 📋 Ficha que se va armando")
+        st.progress(hechos / len(perfil.REQUERIDOS), text=f"{hechos} de {len(perfil.REQUERIDOS)} datos obligatorios")
+        mostrar = perfil.REQUERIDOS + (["departamentos_cobertura"] if campos.get("cobertura") == "regional" else [])
+        if campos.get("nombre"):
+            st.markdown(f"**Empresa:** {campos['nombre']}")
+        st.markdown("\n".join(
+            f"- ✅ **{perfil.ETIQUETAS[c]}:** {perfil.valor_texto(c, campos[c])}" if c in campos
+            else f"- ⬜ {perfil.ETIQUETAS[c]}" for c in mostrar))
+        errores = perfil.validar(perfil.ficha_desde_campos(campos)) if not faltan else []
+        for e in errores:
+            st.error(e)
+        if not faltan and not errores:
+            st.success("Ficha completa. Confirma en el chat o evalúa ahora.")
+            st.button("▶ Evaluar con estos datos", type="primary", on_click=finalizar_chat)
+        st.button("🔄 Empezar de nuevo", on_click=iniciar_chat)
+    st.stop()
+
+
 # ============================ barra lateral ============================
 st.sidebar.markdown("### 🏢 Empresa y datos")
-empresa_sel = st.sidebar.selectbox("Empresa simulada", list(perfil.EMPRESAS))
+empresa_sel = st.sidebar.selectbox("Empresa", [MODO_ASISTENTE] + list(perfil.EMPRESAS),
+                                   help="«Asistente»: Gemini entrevista al usuario y arma la ficha. "
+                                        "Las demás son empresas simuladas (sin IA).")
+modo_chat = empresa_sel == MODO_ASISTENTE
+if "chat_msgs" not in st.session_state:
+    iniciar_chat()
+with st.sidebar.expander("🤖 Gemini", expanded=modo_chat and not clave_gemini()):
+    st.text_input("Clave de API", type="password", key="gemini_key_input",
+                  help="Solo se guarda en esta sesión del navegador. Mejor aún: configúrala en .streamlit/secrets.toml "
+                       "o en la variable GEMINI_API_KEY.")
+    st.text_input("Modelo", value=_modelo_inicial(), key="gemini_modelo",
+                  help="gemini-2.5-flash tiene el apagado anunciado para el 16-oct-2026; por defecto se usa el alias "
+                       "gemini-flash-latest. Si un modelo no existe, se prueban modelos de respaldo.")
+if modo_chat:
+    st.sidebar.button("↩️ Nueva conversación", on_click=iniciar_chat)
 fuente_sel = st.sidebar.radio("Fuente de concursos", ["Descarga masiva OECE", "API en vivo OECE"], horizontal=True,
                               help="Ambas son fuentes oficiales del OECE en formato OCDS.")
 paginas = st.sidebar.slider("Páginas de la API (20 procesos c/u)", 5, 60, 25) if fuente_sel == "API en vivo OECE" else 25
@@ -143,6 +262,9 @@ with st.sidebar.expander("Parámetros avanzados"):
     pob = st.slider("Población", 20, 200, 80, 10)
     gens = st.slider("Generaciones máx.", 20, 400, 150, 10)
     pmut = st.slider("Prob. de mutación por gen", 0.01, 0.30, round(1 / top_n, 2), 0.01)
+
+if modo_chat and st.session_state.ficha_chat is None:
+    pantalla_recoleccion(clave_gemini(), modelo_gemini())       # primer contacto; no continúa hasta tener la ficha
 
 try:
     df_bulk, fuente_bulk, montos_hist = cargar_bulk()
@@ -166,12 +288,17 @@ if fuente_sel != "API en vivo OECE":
 st.sidebar.caption(f"📡 {fuente_txt} · referencia {fecha_ref.date()} · {len(df_src):,} procesos")
 
 # ============================ encabezado ============================
+nombre_empresa = ((st.session_state.ficha_chat or {}).get("nombre") or "Mi empresa") if modo_chat else empresa_sel
 st.title("📊 Portafolio inteligente de concursos públicos")
-st.caption(f"**{empresa_sel}** · Difuso #1 compatibilidad → Algoritmo genético ⇄ Difuso #2 riesgo del portafolio · datos abiertos del OECE (OCDS)")
+st.caption(f"**{nombre_empresa}** · Difuso #1 compatibilidad → Algoritmo genético ⇄ Difuso #2 riesgo del portafolio · datos abiertos del OECE (OCDS)")
 cabecera = st.container()   # se llena al final, cuando ya se ejecutó el modelo
 
-tabs = st.tabs(["🗺️ Arquitectura", "🏢 Empresa", "📥 Concursos OECE", "🎯 Compatibilidad",
-                "⚠️ Riesgo del portafolio", "🧬 Algoritmo genético", "✅ Resultado"])
+nombres_tabs = ["🗺️ Arquitectura", "🏢 Empresa", "📥 Concursos OECE", "🎯 Compatibilidad",
+                "⚠️ Riesgo del portafolio", "🧬 Algoritmo genético", "✅ Resultado"]
+tabs = st.tabs(["💬 Asistente"] + nombres_tabs if modo_chat else nombres_tabs)
+tab_chat = tabs[0] if modo_chat else None
+if modo_chat:
+    tabs = tabs[1:]          # el resto del código sigue usando tabs[0]..tabs[6]
 
 # ============================ 0. Arquitectura ============================
 with tabs[0]:
@@ -180,7 +307,7 @@ with tabs[0]:
       rankdir=LR; bgcolor="transparent"; nodesep=0.25; ranksep=0.35;
       node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, margin="0.12,0.06"];
       edge [color="#888888", fontname="Helvetica", fontsize=8, fontcolor="#888888"];
-      F [label="Ficha técnica\\n(simula chatbot)", fillcolor="#d7efe9"];
+      F [label="Asistente Gemini\\n(entrevista → ficha)", fillcolor="#d7efe9"];
       O [label="Adaptador OECE\\nbulk + API en vivo", fillcolor="#d7efe9"];
       D [label="Filtro duro", fillcolor="#fff0c7"];
       C [label="Difuso #1\\nCompatibilidad\\npor concurso", fillcolor="#fbd9c9"];
@@ -188,17 +315,19 @@ with tabs[0]:
       G [label="Algoritmo genético\\nelige el portafolio", fillcolor="#d3e3f5"];
       RK [label="Difuso #2  Riesgo\\ncantidad · capital\\npersonal · fechas", fillcolor="#fbd9c9"];
       S [label="Portafolio +\\nexplicación", fillcolor="#d7efe9"];
-      F -> D; O -> D; D -> C -> P -> G -> S;
+      L [label="Asistente Gemini\\n(explica el resultado)", fillcolor="#d7efe9"];
+      F -> D; O -> D; D -> C -> P -> G -> S -> L;
       G -> RK [label="cada cromosoma"]; RK -> G [label="riesgo en el fitness"];
     }""", width="content")
     c1, c2, c3 = st.columns(3)
     with c1, st.container(border=True):
         st.markdown("""##### Qué hace
-1. **Ficha**: perfil de la empresa (en el sistema completo la extrae el chatbot).
+1. **Ficha**: perfil de la empresa; la arma el **asistente Gemini** conversando con el usuario (o se llena a mano).
 2. **OECE**: concursos reales convocados.
 3. **Difuso #1**: compatibilidad 0-100 de **cada concurso** (6 variables, 16 reglas).
 4. **AG**: busca la **combinación** de concursos con mejor fitness.
-5. **Difuso #2**: riesgo 0-100 de **cada combinación** que propone el AG.""")
+5. **Difuso #2**: riesgo 0-100 de **cada combinación** que propone el AG.
+6. **Asistente**: recibe el resultado y lo **interpreta** al usuario (la IA no calcula puntajes).""")
     with c2, st.container(border=True):
         st.markdown("""##### Lo pedido: riesgo por cantidad en el fitness
 `Fitness = Σ compatibilidad · (1 − Riesgo/100)^λ`
@@ -214,8 +343,8 @@ cierres chocan). Por eso el riesgo se evalúa dentro del fitness, cromosoma por 
 
 # ============================ 1. Empresa ============================
 with tabs[1]:
-    base = perfil.EMPRESAS[empresa_sel]
-    k = empresa_sel  # las claves dependen de la empresa: al cambiarla se recargan los valores
+    base = st.session_state.ficha_chat if modo_chat else perfil.EMPRESAS[empresa_sel]
+    k = f"chat{st.session_state.chat_version}" if modo_chat else empresa_sel  # al cambiar de empresa se recargan los valores
     c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
     with c1:
         kws = st.text_area("Palabras clave del rubro (una por línea)", "\n".join(base["rubro_keywords"]), height=218, key=k + "kw")
@@ -245,7 +374,7 @@ with tabs[1]:
         st.error(e)
     if errores:
         st.stop()
-    with st.expander("Ficha estructurada (lo que el chatbot entregaría al núcleo inteligente)"):
+    with st.expander("Ficha estructurada (lo que el asistente entrega al núcleo inteligente)"):
         st.json(ficha, expanded=False)
 
 # ============================ pipeline ============================
@@ -466,3 +595,56 @@ with cabecera:
     cols[3].metric("Licitaciones / capacidad", f"{int(xb.sum())} de {ficha['capacidad_operativa']}")
     cols[4].metric("Riesgo del portafolio", f"{riesgo_b:.0f} / 100", R.nivel(riesgo_b), delta_color="off")
     cols[5].metric("Fitness", f"{fb:.1f}", f"λ {lam} · {forma}", delta_color="off")
+
+# ============================ Asistente: interpretación del resultado ============================
+if modo_chat:
+    with tab_chat:
+        ss = st.session_state
+        api_key, modelo = clave_gemini(), modelo_gemini()
+        estado = repr((round(float(lam), 2), forma, bool(pen), tuple(int(v) for v in xb), sorted(ficha.items(), key=str)))
+
+        def resultados_json():
+            return asistente.contexto_resultados(ficha, cand, xb, res["ranking"], ctx, fit, embudo, bar, lam, forma)
+
+        if ss.get("interp") is None:      # se interpreta UNA vez (no en cada movimiento de un slider: cuida la cuota gratuita)
+            try:
+                if not api_key:
+                    raise asistente.GeminiError("No hay clave de API configurada.", "sin_clave")
+                with st.spinner("El asistente está interpretando los resultados…"):
+                    texto, usado = asistente.interpretar(api_key, resultados_json(), modelo=modelo)
+                ss.interp = {"estado": estado, "ok": True, "modelo": usado}
+            except asistente.GeminiError as e:
+                texto = explicacion.texto(xb, cand, ctx, fit, ficha)
+                ss.interp = {"estado": estado, "ok": False, "error": str(e)}
+            ss.post_msgs = [{"role": "assistant", "content": texto}]
+
+        if not ss.interp["ok"]:
+            st.warning(f"No pude usar Gemini ({ss.interp['error']}). Te muestro la explicación estándar del sistema.")
+        c1, c2 = st.columns([4, 1])
+        if ss.interp["estado"] != estado:
+            c1.info("Los parámetros o el resultado cambiaron desde esta explicación. Pulsa «Reinterpretar» para actualizarla.")
+        else:
+            c1.caption(f"Explicación generada por **{ss.interp.get('modelo', 'el sistema')}** con λ = {lam} · {forma}. "
+                       "El asistente solo interpreta: los cálculos los hizo el sistema inteligente.")
+        c2.button("🔄 Reinterpretar", on_click=reinterpretar, disabled=not api_key)
+
+        caja = st.container()
+        pregunta = st.chat_input("Pregúntale al asistente sobre estos resultados…", disabled=not api_key,
+                                 key="entrada_resultados")
+        error = None
+        if pregunta and api_key:
+            hist = ss.post_msgs + [{"role": "user", "content": pregunta}]
+            try:
+                with st.spinner("El asistente está pensando…"):
+                    texto, _ = asistente.interpretar(api_key, resultados_json(), historial=hist, modelo=modelo)
+                ss.post_msgs = hist + [{"role": "assistant", "content": texto}]
+            except asistente.GeminiError as e:
+                error = f"{e}  \nTu pregunta no se envió; vuelve a escribirla: «{pregunta}»"
+        with caja:
+            for m in ss.post_msgs:
+                st.chat_message(m["role"]).markdown(m["content"])
+            if error:
+                st.error(error)
+        with st.expander("Ver la conversación inicial (recolección de datos)"):
+            for m in ss.chat_msgs:
+                st.chat_message(m["role"]).markdown(m["content"])
