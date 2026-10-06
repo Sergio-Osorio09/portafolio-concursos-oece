@@ -126,7 +126,7 @@ COL_BARRA = lambda t: st.column_config.ProgressColumn(t, min_value=0, max_value=
 COL_MONTO = st.column_config.NumberColumn("monto S/", format="compact")
 
 # ============================ asistente (Gemini) ============================
-MODO_ASISTENTE = "💬 Asistente (Gemini)"
+MODO_ASISTENTE = "💬 Asistente IA"
 SALUDO = ("¡Hola! Soy el asistente del sistema de portafolios de concursos públicos. Te haré unas preguntas sobre "
           "tu empresa para evaluar a qué concursos del OECE conviene postular. Para empezar: "
           "**¿a qué se dedica tu empresa y qué bienes, servicios u obras suele ofrecer?**")
@@ -141,16 +141,19 @@ def _secreto(nombre):
 
 def clave_gemini():
     """Clave de la API: lo escrito en la barra lateral > secrets.toml > variable de entorno. Nunca va en el código."""
-    return (st.session_state.get("gemini_key_input", "").strip() or _secreto("GEMINI_API_KEY")
-            or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""))
+    return (st.session_state.get("gemini_key_input", "").strip()
+            or _secreto("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+            or _secreto("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", ""))
 
 
 def _modelo_inicial():
+    if asistente.es_openrouter(clave_gemini()):
+        return _secreto("OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL", "") or asistente.OPENROUTER_DEFECTO
     return _secreto("GEMINI_MODEL") or os.environ.get("GEMINI_MODEL", "") or asistente.MODELO_DEFECTO
 
 
 def modelo_gemini():
-    return st.session_state.get("gemini_modelo", "").strip() or _modelo_inicial()
+    return st.session_state.get(f"gemini_modelo_{asistente.proveedor(clave_gemini())}", "").strip() or _modelo_inicial()
 
 
 def iniciar_chat():
@@ -178,10 +181,10 @@ def pantalla_recoleccion(api_key, modelo):
     """Primer contacto: el asistente entrevista al usuario y va llenando la ficha. Termina con st.stop()."""
     ss = st.session_state
     st.title("💬 Asistente de postulación a concursos públicos")
-    st.caption("El asistente (Gemini) te entrevista y arma la ficha de tu empresa → el sistema inteligente (difuso + "
+    st.caption(f"El asistente ({asistente.proveedor(api_key)}) te entrevista y arma la ficha de tu empresa → el sistema inteligente (difuso + "
                "algoritmo genético) la evalúa → el asistente te explica el resultado.")
     if not api_key:
-        st.warning("Falta la **clave de API de Gemini**: pégala en la barra lateral (🤖 Gemini) o configúrala en "
+        st.warning("Falta la **clave de API** (Gemini u OpenRouter): pégala en la barra lateral (🤖 Asistente IA) o configúrala en "
                    "`.streamlit/secrets.toml` / variable `GEMINI_API_KEY` (ver MANUAL_INSTALACION.md). "
                    "También puedes elegir una empresa simulada en la barra lateral.")
     col_chat, col_ficha = st.columns([1.7, 1])
@@ -231,18 +234,20 @@ def pantalla_recoleccion(api_key, modelo):
 # ============================ barra lateral ============================
 st.sidebar.markdown("### 🏢 Empresa y datos")
 empresa_sel = st.sidebar.selectbox("Empresa", [MODO_ASISTENTE] + list(perfil.EMPRESAS),
-                                   help="«Asistente»: Gemini entrevista al usuario y arma la ficha. "
+                                   help="«Asistente»: un LLM (Gemini u OpenRouter) entrevista al usuario y arma la ficha. "
                                         "Las demás son empresas simuladas (sin IA).")
 modo_chat = empresa_sel == MODO_ASISTENTE
 if "chat_msgs" not in st.session_state:
     iniciar_chat()
-with st.sidebar.expander("🤖 Gemini", expanded=modo_chat and not clave_gemini()):
-    st.text_input("Clave de API", type="password", key="gemini_key_input",
+with st.sidebar.expander("🤖 Asistente IA", expanded=modo_chat and not clave_gemini()):
+    st.text_input("Clave de API (Gemini u OpenRouter)", type="password", key="gemini_key_input",
                   help="Solo se guarda en esta sesión del navegador. Mejor aún: configúrala en .streamlit/secrets.toml "
                        "o en la variable GEMINI_API_KEY.")
-    st.text_input("Modelo", value=_modelo_inicial(), key="gemini_modelo",
-                  help="gemini-2.5-flash tiene el apagado anunciado para el 16-oct-2026; por defecto se usa el alias "
-                       "gemini-flash-latest. Si un modelo no existe, se prueban modelos de respaldo.")
+    st.text_input("Modelo", value=_modelo_inicial(), key=f"gemini_modelo_{asistente.proveedor(clave_gemini())}",
+                  help="Gemini: por defecto gemini-flash-latest. OpenRouter (clave sk-or-…): por defecto openrouter/free, "
+                       "que usa un modelo gratuito disponible. Si un modelo no existe, se prueban modelos de respaldo.")
+    if clave_gemini():
+        st.caption(f"Proveedor detectado: **{asistente.proveedor(clave_gemini())}**")
 if modo_chat:
     st.sidebar.button("↩️ Nueva conversación", on_click=iniciar_chat)
 fuente_sel = st.sidebar.radio("Fuente de concursos", ["Descarga masiva OECE", "API en vivo OECE"], horizontal=True,
@@ -307,7 +312,7 @@ with tabs[0]:
       rankdir=LR; bgcolor="transparent"; nodesep=0.25; ranksep=0.35;
       node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, margin="0.12,0.06"];
       edge [color="#888888", fontname="Helvetica", fontsize=8, fontcolor="#888888"];
-      F [label="Asistente Gemini\\n(entrevista → ficha)", fillcolor="#d7efe9"];
+      F [label="Asistente IA (LLM)\\n(entrevista → ficha)", fillcolor="#d7efe9"];
       O [label="Adaptador OECE\\nbulk + API en vivo", fillcolor="#d7efe9"];
       D [label="Filtro duro", fillcolor="#fff0c7"];
       C [label="Difuso #1\\nCompatibilidad\\npor concurso", fillcolor="#fbd9c9"];
@@ -315,14 +320,14 @@ with tabs[0]:
       G [label="Algoritmo genético\\nelige el portafolio", fillcolor="#d3e3f5"];
       RK [label="Difuso #2  Riesgo\\ncantidad · capital\\npersonal · fechas", fillcolor="#fbd9c9"];
       S [label="Portafolio +\\nexplicación", fillcolor="#d7efe9"];
-      L [label="Asistente Gemini\\n(explica el resultado)", fillcolor="#d7efe9"];
+      L [label="Asistente IA (LLM)\\n(explica el resultado)", fillcolor="#d7efe9"];
       F -> D; O -> D; D -> C -> P -> G -> S -> L;
       G -> RK [label="cada cromosoma"]; RK -> G [label="riesgo en el fitness"];
     }""", width="content")
     c1, c2, c3 = st.columns(3)
     with c1, st.container(border=True):
         st.markdown("""##### Qué hace
-1. **Ficha**: perfil de la empresa; la arma el **asistente Gemini** conversando con el usuario (o se llena a mano).
+1. **Ficha**: perfil de la empresa; la arma el **asistente IA** (Gemini u OpenRouter) conversando con el usuario (o se llena a mano).
 2. **OECE**: concursos reales convocados.
 3. **Difuso #1**: compatibilidad 0-100 de **cada concurso** (6 variables, 16 reglas).
 4. **AG**: busca la **combinación** de concursos con mejor fitness.
@@ -619,7 +624,7 @@ if modo_chat:
             ss.post_msgs = [{"role": "assistant", "content": texto}]
 
         if not ss.interp["ok"]:
-            st.warning(f"No pude usar Gemini ({ss.interp['error']}). Te muestro la explicación estándar del sistema.")
+            st.warning(f"No pude usar el asistente IA ({ss.interp['error']}). Te muestro la explicación estándar del sistema.")
         c1, c2 = st.columns([4, 1])
         if ss.interp["estado"] != estado:
             c1.info("Los parámetros o el resultado cambiaron desde esta explicación. Pulsa «Reinterpretar» para actualizarla.")

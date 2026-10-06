@@ -31,6 +31,20 @@ API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODELO_DEFECTO = "gemini-flash-latest"
 MODELOS_RESPALDO = ["gemini-3.5-flash", "gemini-2.5-flash"]
 
+# OpenRouter (alternativa): API compatible con OpenAI que da acceso a modelos gratuitos.
+# Se detecta sola por el prefijo de la clave ("sk-or-"). "openrouter/free" enruta a un modelo gratuito disponible.
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_DEFECTO = "openrouter/free"
+OPENROUTER_RESPALDO = ["google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"]
+
+
+def es_openrouter(api_key):
+    return str(api_key or "").strip().startswith("sk-or-")
+
+
+def proveedor(api_key):
+    return "OpenRouter" if es_openrouter(api_key) else "Gemini"
+
 
 class GeminiError(Exception):
     """Error al llamar a Gemini, con un mensaje ya pensado para mostrarse al usuario."""
@@ -108,15 +122,70 @@ def _llamar_modelo(api_key, modelo, contents, system, schema, timeout, reintento
     raise GeminiError("Gemini no respondió. Inténtalo de nuevo.", None)
 
 
-def llamar_gemini(api_key, contents, system, schema=None, modelo=None, timeout=60, reintentos=2):
-    """Devuelve (texto, modelo_usado). Si el modelo responde 404 prueba los de respaldo."""
-    if not api_key:
-        raise GeminiError("Falta la clave de API de Gemini (barra lateral → Gemini, o GEMINI_API_KEY).", "sin_clave")
-    primero = (modelo or MODELO_DEFECTO).strip()
-    ultimo = None
-    for m in [primero] + [x for x in MODELOS_RESPALDO if x != primero]:
+def _llamar_openrouter(api_key, modelo, contents, system, schema, timeout, reintentos):
+    """Mismo contrato que _llamar_modelo, pero contra OpenRouter (formato OpenAI)."""
+    mensajes = [{"role": "system", "content": system}] + [
+        {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]} for c in contents]
+    cuerpo = {"model": modelo, "messages": mensajes}
+    if schema:
+        cuerpo["response_format"] = {"type": "json_object"}       # el prompt ya describe el JSON esperado
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
+               "X-Title": "Portafolio de concursos OECE"}
+    for intento in range(reintentos + 1):
         try:
-            return _llamar_modelo(api_key, m, contents, system, schema, timeout, reintentos), m
+            r = requests.post(OPENROUTER_URL, headers=headers, json=cuerpo, timeout=timeout)
+        except requests.RequestException as e:
+            if intento < reintentos:
+                time.sleep(1.5 * (intento + 1))
+                continue
+            raise GeminiError(f"No se pudo conectar con OpenRouter ({e.__class__.__name__}). "
+                              "Revisa tu conexión a internet.", "red")
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("error"):                                   # OpenRouter a veces devuelve 200 con error
+                raise GeminiError(f"OpenRouter: {str(data['error'].get('message'))[:200]}", 404)
+            try:
+                texto = data["choices"][0]["message"]["content"] or ""
+            except (KeyError, IndexError, TypeError):
+                texto = ""
+            if not texto.strip():
+                raise GeminiError("El modelo devolvió una respuesta vacía.", 404)   # 404 -> se prueba otro modelo
+            return texto
+        msg = _mensaje_error(r)
+        if r.status_code in (429, 500, 502, 503) and intento < reintentos:
+            time.sleep(2 * (intento + 1))
+            continue
+        if r.status_code == 400 and "response_format" in cuerpo:
+            cuerpo.pop("response_format")                          # el modelo no admite modo JSON
+            continue
+        if r.status_code == 401:
+            raise GeminiError("La clave de OpenRouter no es válida o fue revocada.", 401)
+        if r.status_code == 402:
+            raise GeminiError("OpenRouter pide créditos para este modelo: usa uno gratuito (terminado en :free).", 402)
+        if r.status_code == 429:
+            raise GeminiError("Se alcanzó el límite de uso gratuito de OpenRouter. Espera un momento e inténtalo de nuevo.", 429)
+        if r.status_code in (400, 404, 502, 503):
+            raise GeminiError(f"OpenRouter: el modelo «{modelo}» no está disponible ({msg[:120]}).", 404)
+        raise GeminiError(f"OpenRouter respondió con error {r.status_code}: {msg[:200]}", r.status_code)
+    raise GeminiError("OpenRouter no respondió. Inténtalo de nuevo.", None)
+
+
+def llamar_gemini(api_key, contents, system, schema=None, modelo=None, timeout=60, reintentos=2):
+    """Devuelve (texto, modelo_usado). Usa Gemini u OpenRouter según la clave. Si un modelo no está
+    disponible (404) prueba los de respaldo."""
+    if not api_key:
+        raise GeminiError("Falta la clave de API (barra lateral → 🤖 Asistente IA, o secrets.toml).", "sin_clave")
+    if es_openrouter(api_key):
+        llamar, defecto, respaldo = _llamar_openrouter, OPENROUTER_DEFECTO, OPENROUTER_RESPALDO
+        modelo = modelo if modelo and "/" in modelo else None      # un nombre de Gemini no sirve en OpenRouter
+    else:
+        llamar, defecto, respaldo = _llamar_modelo, MODELO_DEFECTO, MODELOS_RESPALDO
+        modelo = modelo if modelo and "/" not in modelo else None
+    primero = (modelo or defecto).strip()
+    ultimo = None
+    for m in [primero] + [x for x in respaldo if x != primero]:
+        try:
+            return llamar(api_key, m, contents, system, schema, timeout, reintentos), m
         except GeminiError as e:
             ultimo = e
             if e.codigo != 404:
