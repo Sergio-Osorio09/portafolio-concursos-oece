@@ -32,10 +32,12 @@ MODELO_DEFECTO = "gemini-flash-latest"
 MODELOS_RESPALDO = ["gemini-3.5-flash", "gemini-2.5-flash"]
 
 # OpenRouter (alternativa): API compatible con OpenAI que da acceso a modelos gratuitos.
-# Se detecta sola por el prefijo de la clave ("sk-or-"). "openrouter/free" enruta a un modelo gratuito disponible.
+# Se detecta sola por el prefijo de la clave ("sk-or-").
+# Por defecto: un modelo gratuito MoE (pocos parámetros activos = rápido) con modo JSON y alta disponibilidad.
+# El razonamiento se desactiva (ver _llamar_openrouter): para entrevistar y explicar no hace falta y agrega segundos.
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_DEFECTO = "openrouter/free"
-OPENROUTER_RESPALDO = ["google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"]
+OPENROUTER_DEFECTO = "nvidia/nemotron-3-super-120b-a12b:free"
+OPENROUTER_RESPALDO = ["google/gemma-4-26b-a4b-it:free", "openrouter/free"]
 
 
 def es_openrouter(api_key):
@@ -126,7 +128,8 @@ def _llamar_openrouter(api_key, modelo, contents, system, schema, timeout, reint
     """Mismo contrato que _llamar_modelo, pero contra OpenRouter (formato OpenAI)."""
     mensajes = [{"role": "system", "content": system}] + [
         {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]} for c in contents]
-    cuerpo = {"model": modelo, "messages": mensajes}
+    cuerpo = {"model": modelo, "messages": mensajes, "max_tokens": 1500, "temperature": 0.3,
+              "reasoning": {"enabled": False}}                     # sin "pensar": respuestas más rápidas
     if schema:
         cuerpo["response_format"] = {"type": "json_object"}       # el prompt ya describe el JSON esperado
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
@@ -155,6 +158,9 @@ def _llamar_openrouter(api_key, modelo, contents, system, schema, timeout, reint
         if r.status_code in (429, 500, 502, 503) and intento < reintentos:
             time.sleep(2 * (intento + 1))
             continue
+        if r.status_code == 400 and "reasoning" in cuerpo:
+            cuerpo.pop("reasoning")                                # el modelo no permite desactivar el razonamiento
+            continue
         if r.status_code == 400 and "response_format" in cuerpo:
             cuerpo.pop("response_format")                          # el modelo no admite modo JSON
             continue
@@ -170,7 +176,7 @@ def _llamar_openrouter(api_key, modelo, contents, system, schema, timeout, reint
     raise GeminiError("OpenRouter no respondió. Inténtalo de nuevo.", None)
 
 
-def llamar_gemini(api_key, contents, system, schema=None, modelo=None, timeout=60, reintentos=2):
+def llamar_gemini(api_key, contents, system, schema=None, modelo=None, timeout=45, reintentos=1):
     """Devuelve (texto, modelo_usado). Usa Gemini u OpenRouter según la clave. Si un modelo no está
     disponible (404) prueba los de respaldo."""
     if not api_key:

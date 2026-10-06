@@ -185,7 +185,7 @@ def pantalla_recoleccion(api_key, modelo):
                "algoritmo genético) la evalúa → el asistente te explica el resultado.")
     if not api_key:
         st.warning("Falta la **clave de API** (Gemini u OpenRouter): pégala en la barra lateral (🤖 Asistente IA) o configúrala en "
-                   "`.streamlit/secrets.toml` / variable `GEMINI_API_KEY` (ver MANUAL_INSTALACION.md). "
+                   "`app/.streamlit/secrets.toml` (`OPENROUTER_API_KEY` o `GEMINI_API_KEY`) (ver MANUAL_INSTALACION.md). "
                    "También puedes elegir una empresa simulada en la barra lateral.")
     col_chat, col_ficha = st.columns([1.7, 1])
     error = None
