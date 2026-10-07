@@ -37,7 +37,7 @@ MODELOS_RESPALDO = ["gemini-3.5-flash", "gemini-2.5-flash"]
 # El razonamiento se desactiva (ver _llamar_openrouter): para entrevistar y explicar no hace falta y agrega segundos.
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_DEFECTO = "nvidia/nemotron-3-super-120b-a12b:free"
-OPENROUTER_RESPALDO = ["google/gemma-4-26b-a4b-it:free", "openrouter/free"]
+OPENROUTER_RESPALDO = ["openrouter/free", "google/gemma-4-26b-a4b-it:free"]
 
 
 def es_openrouter(api_key):
