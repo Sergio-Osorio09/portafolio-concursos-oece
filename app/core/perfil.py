@@ -95,7 +95,15 @@ DEPARTAMENTOS = [
     "MADRE DE DIOS", "MOQUEGUA", "PASCO", "PIURA", "PUNO", "SAN MARTIN", "TACNA", "TUMBES", "UCAYALI",
 ]
 _ALIAS_DEP = {"CUZCO": "CUSCO", "PROVINCIA CONSTITUCIONAL DEL CALLAO": "CALLAO", "LIMA METROPOLITANA": "LIMA",
-              "LIMA PROVINCIAS": "LIMA", "HUANUCO": "HUANUCO"}
+              "LIMA PROVINCIAS": "LIMA", "HUANUCO": "HUANUCO",
+              # ciudades frecuentes -> departamento (el usuario suele decir la ciudad)
+              "IQUITOS": "LORETO", "TRUJILLO": "LA LIBERTAD", "CHICLAYO": "LAMBAYEQUE", "HUANCAYO": "JUNIN",
+              "PUCALLPA": "UCAYALI", "TARAPOTO": "SAN MARTIN", "MOYOBAMBA": "SAN MARTIN", "HUARAZ": "ANCASH",
+              "CHIMBOTE": "ANCASH", "JULIACA": "PUNO", "PUERTO MALDONADO": "MADRE DE DIOS", "ILO": "MOQUEGUA",
+              "CHACHAPOYAS": "AMAZONAS", "BAGUA": "AMAZONAS", "ABANCAY": "APURIMAC", "ANDAHUAYLAS": "APURIMAC",
+              "HUAMANGA": "AYACUCHO", "CERRO DE PASCO": "PASCO", "SULLANA": "PIURA", "TALARA": "PIURA",
+              "CHINCHA": "ICA", "PISCO": "ICA", "NAZCA": "ICA", "TINGO MARIA": "HUANUCO", "JAEN": "CAJAMARCA",
+              "CANETE": "LIMA", "HUACHO": "LIMA", "TUMBES": "TUMBES", "TACNA": "TACNA"}
 _ALIAS_CAT = {"goods": "goods", "bienes": "goods", "bien": "goods",
               "services": "services", "servicios": "services", "servicio": "services",
               "works": "works", "obras": "works", "obra": "works"}

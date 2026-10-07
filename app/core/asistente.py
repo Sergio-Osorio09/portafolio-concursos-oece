@@ -128,7 +128,7 @@ def _llamar_openrouter(api_key, modelo, contents, system, schema, timeout, reint
     """Mismo contrato que _llamar_modelo, pero contra OpenRouter (formato OpenAI)."""
     mensajes = [{"role": "system", "content": system}] + [
         {"role": "assistant" if c["role"] == "model" else "user", "content": c["parts"][0]["text"]} for c in contents]
-    cuerpo = {"model": modelo, "messages": mensajes, "max_tokens": 1500, "temperature": 0.3,
+    cuerpo = {"model": modelo, "messages": mensajes, "max_tokens": 2500, "temperature": 0.3,
               "reasoning": {"enabled": False}}                     # sin "pensar": respuestas más rápidas
     if schema:
         cuerpo["response_format"] = {"type": "json_object"}       # el prompt ya describe el JSON esperado
@@ -240,62 +240,92 @@ ESQUEMA_RECOLECCION = {
             "properties": {"campo": {"type": "STRING", "enum": CAMPOS_IA}, "valor": {"type": "STRING"}},
             "required": ["campo", "valor"]}},
         "confirmado": {"type": "BOOLEAN"},
+        "notas": {"type": "STRING"},
     },
     "required": ["mensaje", "actualizaciones", "confirmado"],
 }
 
-PROMPT_RECOLECCION = """Eres el asistente de entrada de un sistema que recomienda a qué concursos públicos del Perú (OECE/SEACE) \
-conviene postular a una empresa. En esta etapa tu ÚNICO trabajo es conversar con el usuario, en español y con trato \
-cordial y sencillo, para reunir la ficha técnica de su empresa. NO calcules puntajes, NO recomiendes concursos y NO \
-anticipes resultados: de eso se encarga el sistema después.
+PROMPT_RECOLECCION = """Eres un asesor experto en contrataciones públicas del Perú (OECE/SEACE) que conversa con el dueño o \
+gerente de una empresa. Tu objetivo es CONOCER BIEN a la empresa y, de paso, reunir su ficha técnica para que el sistema \
+(lógica difusa + algoritmo genético) le recomiende a qué concursos postular. Hablas en español, con calidez y de forma \
+natural, como un consultor: no como un formulario.
 
-CAMPOS (los montos son en soles, S/):
+CÓMO CONVERSAR:
+- Interésate por la empresa: qué hace exactamente, sus clientes (públicos o privados), proyectos que ya hizo, \
+especialidades, certificaciones, fortalezas y dificultades. Haz preguntas abiertas cuando aporten contexto.
+- Si el usuario pregunta algo o pide una sugerencia, RESPÓNDELE primero de forma útil y concreta, y luego retoma. \
+Ejemplos: si pregunta "¿qué montos me sugieres?", propone cifras razonables con su porqué usando lo que ya sabes \
+(p. ej. monto mínimo de interés ≈ 5-10 % de la capacidad financiera; presupuesto para postular ≈ 5-10 % de esa \
+capacidad, porque cubre preparación de propuestas y garantías) y pregunta si las acepta.
+- Si pide un ANÁLISIS (FODA, en qué tipo de concursos le iría mejor, qué mejorar, riesgos de postular a muchos a la vez, \
+etc.), HAZLO EN ESE MISMO MENSAJE con lo que ya sabes, aunque falten datos de la ficha (nunca lo postergues para \
+pedir más datos primero). Usa Markdown breve con viñetas y títulos en negrita; marca como "supuesto" lo que no te \
+dijo. No inventes datos de la empresa ni cifras de concursos reales: los concursos los analiza el sistema después. \
+Solo al final, en una línea, puedes retomar con UNA pregunta de la ficha.
+- Haz como máximo 2 preguntas por mensaje. Evita sonar repetitivo. No menciones JSON, "campos" ni nombres técnicos.
+- No calcules puntajes ni digas a qué concursos postular: eso lo hace el sistema con datos oficiales del OECE.
+
+DATOS DE LA FICHA (montos en soles, S/):
 - nombre (opcional): nombre de la empresa.
 - rubro_keywords: palabras clave de lo que vende o hace (separadas por punto y coma).
-- categorias: bienes, servicios y/u obras que atiende. Valores válidos: goods, services, works.
-- capacidad_financiera: monto máximo de un contrato que podría asumir (capital/respaldo financiero).
+- categorias: bienes, servicios y/u obras. Valores válidos: goods, services, works.
+- capacidad_financiera: monto máximo de un contrato que podría asumir.
 - monto_minimo_interes: monto por debajo del cual no le interesa postular.
-- presupuesto_postulaciones: dinero que puede destinar a preparar propuestas y garantías.
+- presupuesto_postulaciones: dinero para preparar propuestas y garantías.
 - experiencia_anios: años de experiencia de la empresa.
 - personal_disponible: personas que podría asignar a proyectos.
 - capacidad_operativa: cuántos proyectos puede ejecutar a la vez.
-- departamento_base: departamento del Perú donde está la empresa.
-- cobertura: "nacional" (postula en cualquier región) o "regional" (solo en algunos departamentos).
-- departamentos_cobertura: departamentos donde postula (necesario si la cobertura es regional; separados por punto y coma).
+- departamento_base: departamento del Perú donde está la empresa (si dice una ciudad, usa la ciudad; el sistema la traduce).
+- cobertura: "nacional" o "regional".
+- departamentos_cobertura: departamentos donde postula (si la cobertura es regional; separados por punto y coma).
 
-REGLAS:
-1. Haz como máximo 2 o 3 preguntas por mensaje, empezando por lo que falta. Mensajes cortos. Los verá el usuario tal \
-cual: no menciones JSON, "campos" ni nombres técnicos (di "capacidad financiera", no "capacidad_financiera").
-2. En "actualizaciones" incluye SOLO lo que el usuario dijo o corrigió en su ÚLTIMO mensaje, con "valor" en texto \
-simple: números en dígitos sin símbolos ("1.5 millones" → 1500000; "medio millón" → 500000). Excepción: rubro_keywords \
-puedes derivarlas de lo que el usuario cuente que hace/vende (de 8 a 15 palabras clave en minúsculas y sin tildes, \
-como aparecen en las bases de concursos) y categorias de lo que atiende; el usuario las verá en la ficha y las puede \
-corregir. No inventes ningún otro dato ni rellenes con 0 o vacío.
-3. Si el usuario no sabe un dato, explícale en una frase qué significa y sugiere un valor típico pidiendo su acuerdo; \
-inclúyelo solo cuando lo acepte.
-4. Cuando ya no falte nada, muestra un resumen breve en lista y pregunta si desea evaluar. Pon "confirmado": true \
-SOLO si en su último mensaje el usuario aprueba expresamente ese resumen (por ejemplo "sí, evalúa"); en cualquier \
-otro caso, false.
-5. Si el usuario pregunta algo ajeno al tema, responde en una frase y retoma la entrevista.
+REGLAS DE LA FICHA:
+1. En "actualizaciones" incluye solo lo que el usuario dijo, corrigió o ACEPTÓ en su ÚLTIMO mensaje, con "valor" en \
+texto simple: números en dígitos ("1.5 millones" → 1500000). rubro_keywords puedes derivarlas de lo que cuenta que hace \
+(8 a 15 palabras clave en minúsculas, sin tildes, como aparecen en las bases de concursos) y categorias de lo que \
+atiende. No inventes ningún otro dato ni rellenes con 0.
+2. Un valor que TÚ sugeriste solo va a "actualizaciones" cuando el usuario lo acepte.
+3. En "notas" escribe un resumen ACUMULADO (máx. 6 líneas) de lo cualitativo que sabes de la empresa: especialidad, \
+clientes, proyectos previos, certificaciones, fortalezas, preocupaciones. Mantén lo anterior y agrega lo nuevo.
+4. Cuando ya no falte ningún dato, muestra un resumen breve y pregunta si desea evaluar. "confirmado": true SOLO si \
+en su último mensaje el usuario aprueba expresamente evaluar; si no, false.
 
-ESTADO ACTUAL (lo que el sistema ya tiene registrado): {estado}
+ESTADO ACTUAL DE LA FICHA: {estado}
 FALTAN: {faltan}
+LO QUE YA SABES DE LA EMPRESA (notas): {notas}
 
-Responde SOLO con un JSON: {{"mensaje": "...", "actualizaciones": [{{"campo": "...", "valor": "..."}}], "confirmado": false}}"""
+Responde SIEMPRE y SOLO con un JSON válido:
+{{"mensaje": "lo que le dices al usuario (puede ser Markdown)", "actualizaciones": [{{"campo": "...", "valor": "..."}}], \
+"notas": "...", "confirmado": false}}"""
 
 
-def _sistema_recoleccion(campos):
+def _sistema_recoleccion(campos, notas=""):
     estado = json.dumps(campos, ensure_ascii=False) if campos else "nada todavía"
     faltan = ", ".join(perfil.ETIQUETAS.get(f, f) for f in perfil.faltantes(campos)) or "nada: la ficha está completa"
-    return PROMPT_RECOLECCION.format(estado=estado, faltan=faltan)
+    return PROMPT_RECOLECCION.format(estado=estado, faltan=faltan, notas=notas or "nada todavía")
 
 
-def turno_recoleccion(api_key, historial, campos, modelo=None):
+def _mensaje_de(datos, texto):
+    """Texto para el usuario aunque el modelo use otra clave o devuelva el JSON a medias."""
+    for k in ("mensaje", "respuesta", "message", "response", "texto", "text"):
+        v = datos.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    largos = [v for k, v in datos.items() if isinstance(v, str) and k != "notas" and len(v.strip()) > 25]
+    if largos:
+        return max(largos, key=len).strip()
+    m = re.search(r'"mensaje"\s*:\s*"((?:[^"\\]|\\.)*)', texto)           # JSON truncado
+    if m:
+        return m.group(1).encode().decode("unicode_escape", "ignore").strip()
+    return ""
+
+
+def turno_recoleccion(api_key, historial, campos, modelo=None, notas=""):
     """Un turno de la entrevista. `historial` incluye el último mensaje del usuario.
 
     Devuelve dict: mensaje, campos (acumulados y validados), nuevos, avisos, faltan, errores,
     confirmado (solo True si la ficha está completa y válida) y modelo."""
-    texto, usado = llamar_gemini(api_key, _contenidos(historial), _sistema_recoleccion(campos),
+    texto, usado = llamar_gemini(api_key, _contenidos(historial), _sistema_recoleccion(campos, notas),
                                  ESQUEMA_RECOLECCION, modelo)
     datos = _a_json(texto)
     if not isinstance(datos, dict):                       # el modelo contestó en texto plano
@@ -310,13 +340,19 @@ def turno_recoleccion(api_key, historial, campos, modelo=None):
     faltan = perfil.faltantes(acumulados)
     errores = perfil.validar(perfil.ficha_desde_campos(acumulados)) if not faltan else []
 
-    mensaje = str(datos.get("mensaje") or "").strip() or "Cuéntame un poco más sobre tu empresa, por favor."
+    mensaje = _mensaje_de(datos, texto)
+    if not mensaje:                                       # respaldo determinístico: pregunta lo siguiente que falta
+        sig = perfil.ETIQUETAS.get(faltan[0], faltan[0]).lower() if faltan else None
+        mensaje = (("Anotado. " if nuevos else "") + (f"Ahora cuéntame: ¿{sig}?" if sig else
+                   "Ya tengo todos los datos. ¿Quieres que evalúe los concursos con esta ficha?"))
+    notas_nuevas = datos.get("notas")
+    notas_nuevas = notas_nuevas.strip()[:1200] if isinstance(notas_nuevas, str) and notas_nuevas.strip() else notas
     notas = [f"⚠️ {a}" for a in avisos + errores]
     if notas:
         mensaje += "\n\n" + "\n".join(notas)
     return {"mensaje": mensaje, "campos": acumulados, "nuevos": nuevos, "avisos": avisos, "faltan": faltan,
             "errores": errores, "confirmado": bool(datos.get("confirmado")) and not faltan and not errores,
-            "modelo": usado}
+            "modelo": usado, "notas": notas_nuevas}
 
 
 # ------------------------------------------------------------------ 3. interpretación del resultado
@@ -347,7 +383,7 @@ def contexto_resultados(ficha, cand, xb, ranking, ctx, fit, embudo, barrido, lam
     return {
         "empresa": {k: ficha[k] for k in ("nombre", "categorias", "capacidad_financiera", "monto_minimo_interes",
                                           "presupuesto_postulaciones", "experiencia_anios", "personal_disponible",
-                                          "capacidad_operativa", "departamento_base", "cobertura") if k in ficha},
+                                          "capacidad_operativa", "departamento_base", "cobertura", "descripcion") if k in ficha},
         "filtro_duro": [{"etapa": e, "quedan": int(q)} for e, q in zip(embudo["Etapa"], embudo["Quedan"])],
         "candidatos_evaluados": int(ctx["n"]),
         "portafolio_recomendado": {
@@ -384,6 +420,9 @@ empresa) y "riesgo" (0-100: qué tan difícil sería sostener todo el portafolio
 - Para cada concurso recomendado di en una línea por qué conviene (usa sus datos). Menciona la sensibilidad: cómo cambia \
 la cantidad de licitaciones si la empresa es más o menos cautelosa frente al riesgo.
 - Cierra con 2 o 3 pasos concretos siguientes.
+- Si el usuario pide un análisis (FODA, estrategia, qué mejorar para ganar más concursos, qué pasa si postula a más), \
+hazlo combinando los RESULTADOS con lo que se sabe de la empresa (campo "descripcion"). Separa claramente lo que \
+sale del sistema de tus recomendaciones generales.
 - Español, Markdown breve (máximo ~350 palabras en la explicación inicial; más corto en las respuestas de seguimiento).
 
 RESULTADOS (JSON):

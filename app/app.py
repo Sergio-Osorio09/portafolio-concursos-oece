@@ -160,6 +160,7 @@ def iniciar_chat():
     ss = st.session_state
     ss.chat_msgs = [{"role": "assistant", "content": SALUDO}]
     ss.chat_campos = {}
+    ss.chat_notas = ""
     ss.ficha_chat = None
     ss.post_msgs = []
     ss.interp = None
@@ -168,7 +169,10 @@ def iniciar_chat():
 
 def finalizar_chat():
     """La ficha se entrega al sistema inteligente: a partir de aquí corre filtro + difusos + AG."""
-    st.session_state.ficha_chat = perfil.ficha_desde_campos(st.session_state.chat_campos)
+    ficha = perfil.ficha_desde_campos(st.session_state.chat_campos)
+    if st.session_state.get("chat_notas"):
+        ficha["descripcion"] = st.session_state.chat_notas      # perfil cualitativo para la interpretación final
+    st.session_state.ficha_chat = ficha
     st.session_state.interp = None
     st.session_state.post_msgs = []
 
@@ -178,30 +182,35 @@ def reinterpretar():
 
 
 def pantalla_recoleccion(api_key, modelo):
-    """Primer contacto: el asistente entrevista al usuario y va llenando la ficha. Termina con st.stop()."""
+    """Primer contacto: el asistente entrevista al usuario y va llenando la ficha. Termina con st.stop().
+    El chat y la ficha tienen altura fija (con scroll propio) para que la ficha siempre quede a la vista."""
     ss = st.session_state
-    st.title("💬 Asistente de postulación a concursos públicos")
-    st.caption(f"El asistente ({asistente.proveedor(api_key)}) te entrevista y arma la ficha de tu empresa → el sistema inteligente (difuso + "
-               "algoritmo genético) la evalúa → el asistente te explica el resultado.")
+    ss.setdefault("chat_notas", "")
+    st.markdown(f"### 💬 Asistente de postulación a concursos públicos")
+    st.caption(f"El asistente ({asistente.proveedor(api_key)}) conversa contigo y arma la ficha de tu empresa → el sistema "
+               "inteligente (difuso + algoritmo genético) la evalúa → el asistente te explica el resultado. "
+               "Puedes pedirle sugerencias o un análisis de tu empresa en cualquier momento.")
     if not api_key:
         st.warning("Falta la **clave de API** (Gemini u OpenRouter): pégala en la barra lateral (🤖 Asistente IA) o configúrala en "
-                   "`app/.streamlit/secrets.toml` (`OPENROUTER_API_KEY` o `GEMINI_API_KEY`) (ver MANUAL_INSTALACION.md). "
+                   "`app/.streamlit/secrets.toml` (`OPENROUTER_API_KEY` o `GEMINI_API_KEY`). "
                    "También puedes elegir una empresa simulada en la barra lateral.")
     col_chat, col_ficha = st.columns([1.7, 1])
     error = None
     with col_chat:
-        caja = st.container()
-        entrada = st.chat_input("Escribe tu respuesta…", disabled=not api_key, key="entrada_recoleccion")
+        caja = st.container(height=560, border=True)
+        entrada = st.chat_input("Escribe tu respuesta, una pregunta o pide un análisis…", disabled=not api_key,
+                                key="entrada_recoleccion")
         if entrada and api_key:
             hist = ss.chat_msgs + [{"role": "user", "content": entrada}]
             try:
                 with st.spinner("El asistente está pensando…"):
-                    r = asistente.turno_recoleccion(api_key, hist, ss.chat_campos, modelo)
+                    r = asistente.turno_recoleccion(api_key, hist, ss.chat_campos, modelo, ss.chat_notas)
             except asistente.GeminiError as e:
                 error = f"{e}  \nTu mensaje no se envió; vuelve a escribirlo: «{entrada}»"
             else:
                 ss.chat_msgs = hist + [{"role": "assistant", "content": r["mensaje"]}]
                 ss.chat_campos = r["campos"]
+                ss.chat_notas = r.get("notas") or ss.chat_notas
                 if r["confirmado"]:          # ficha completa y el usuario aprobó el resumen
                     finalizar_chat()
                     st.rerun()
@@ -210,23 +219,26 @@ def pantalla_recoleccion(api_key, modelo):
             st.chat_message(m["role"]).markdown(m["content"])
         if error:
             st.error(error)
-    with col_ficha, st.container(border=True):
+    with col_ficha, st.container(border=True, height=625):
         campos, faltan = ss.chat_campos, perfil.faltantes(ss.chat_campos)
         hechos = len(perfil.REQUERIDOS) - len(set(faltan) & set(perfil.REQUERIDOS))
         st.markdown("##### 📋 Ficha que se va armando")
         st.progress(hechos / len(perfil.REQUERIDOS), text=f"{hechos} de {len(perfil.REQUERIDOS)} datos obligatorios")
+        errores = perfil.validar(perfil.ficha_desde_campos(campos)) if not faltan else []
+        if not faltan and not errores:
+            st.success("Ficha completa. Confirma en el chat o evalúa ahora.")
+            st.button("▶ Evaluar con estos datos", type="primary", on_click=finalizar_chat, width="stretch")
+        for e in errores:
+            st.error(e)
         mostrar = perfil.REQUERIDOS + (["departamentos_cobertura"] if campos.get("cobertura") == "regional" else [])
         if campos.get("nombre"):
             st.markdown(f"**Empresa:** {campos['nombre']}")
         st.markdown("\n".join(
             f"- ✅ **{perfil.ETIQUETAS[c]}:** {perfil.valor_texto(c, campos[c])}" if c in campos
             else f"- ⬜ {perfil.ETIQUETAS[c]}" for c in mostrar))
-        errores = perfil.validar(perfil.ficha_desde_campos(campos)) if not faltan else []
-        for e in errores:
-            st.error(e)
-        if not faltan and not errores:
-            st.success("Ficha completa. Confirma en el chat o evalúa ahora.")
-            st.button("▶ Evaluar con estos datos", type="primary", on_click=finalizar_chat)
+        if ss.chat_notas:
+            st.markdown("##### 🧠 Lo que el asistente sabe de la empresa")
+            st.caption(ss.chat_notas)
         st.button("🔄 Empezar de nuevo", on_click=iniciar_chat)
     st.stop()
 
